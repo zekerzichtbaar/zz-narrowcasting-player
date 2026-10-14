@@ -72,7 +72,7 @@ fi
 echo "==> packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q --no-install-recommends mpv chrony python3 python3-websockets \
+apt-get install -y -q --no-install-recommends mpv chrony python3 \
   python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base
 
 echo "==> files"
@@ -89,6 +89,11 @@ if [[ ! -e "$ETC/config.toml" ]]; then
   echo "    wrote default $ETC/config.toml"
 else
   echo "    keeping existing $ETC/config.toml"
+  # The WebSocket era default was a 5 min fallback poll; over HTTP the poll is the update signal.
+  if grep -q '^manifest_poll = 300$' "$ETC/config.toml"; then
+    sed -i 's/^manifest_poll = 300$/manifest_poll = 30/' "$ETC/config.toml"
+    echo "    manifest_poll 300 -> 30 (HTTP protocol)"
+  fi
 fi
 install -d -m 0700 "$STATE"
 

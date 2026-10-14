@@ -14,6 +14,8 @@ BASE_ARGS = [
     "--no-osc", "--osd-level=0", "--no-input-default-bindings", "--input-vo-keyboard=no",
     "--cursor-autohide=always", "--really-quiet", "--no-terminal",
     "--image-display-duration=inf", "--keep-open=yes",
+    # Only OSD use is show_text() ("Scherm identificeren"): big and centred.
+    "--osd-font-size=110", "--osd-align-x=center", "--osd-align-y=center", "--osd-border-size=4",
 ]
 
 
@@ -107,6 +109,10 @@ class Mpv:
 
     def seek(self, t):
         return self.command("seek", t, "absolute+exact")
+
+    def show_text(self, text, ms):
+        """OSD text over whatever plays, for ms. Level 0: shown despite --osd-level=0."""
+        return self.command("show-text", text, int(ms), 0)
 
     def loadfile(self, path):
         return self.command("loadfile", path, "replace")

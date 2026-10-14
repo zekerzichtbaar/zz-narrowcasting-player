@@ -43,16 +43,23 @@ def _post(url, body, timeout=15):
 
 
 def register(cms_url, dev_id):
-    """POST /api/devices/register -> {code, expires_at, pair_url, poll_interval}."""
+    """POST /api/devices/register -> {code, expires_at, pair_url, poll_interval, poll_secret}."""
     return _post(cms_url.rstrip("/") + "/api/devices/register", {
         "device_id": dev_id, "agent_version": __version__,
         "hostname": socket.gethostname(), "resolution": "1920x1080"})
 
 
-def status(cms_url, dev_id, code, timeout=15):
+def status_request(cms_url, dev_id, code, secret):
+    """GET /api/devices/register/status; the poll_secret from register goes in the bearer header
+    (never in the URL, so it stays out of access logs). Only this Pi knows it, so nobody who just
+    reads the code off the screen can fetch the token."""
     q = urllib.parse.urlencode({"device_id": dev_id, "code": code})
-    with urllib.request.urlopen(cms_url.rstrip("/") + "/api/devices/register/status?" + q,
-                                timeout=timeout) as r:
+    return urllib.request.Request(cms_url.rstrip("/") + "/api/devices/register/status?" + q,
+                                  headers={"Authorization": "Bearer " + (secret or "")})
+
+
+def status(cms_url, dev_id, code, secret, timeout=15):
+    with urllib.request.urlopen(status_request(cms_url, dev_id, code, secret), timeout=timeout) as r:
         return json.load(r)
 
 
@@ -102,10 +109,10 @@ class Pairing:
                 if self.info is None or time.time() >= deadline:
                     r = register(cms, self.device_id)
                     deadline = local_deadline(r["expires_at"], time.time())
-                    self.info = {k: r.get(k) for k in ("code", "pair_url", "expires_at")}
+                    self.info = {k: r.get(k) for k in ("code", "pair_url", "expires_at", "poll_secret")}
                     self.info["poll_interval"] = float(r.get("poll_interval") or 3)
                     log.info("pairing code %s (%s)", r["code"], r.get("pair_url"))
-                st = status(cms, self.device_id, self.info["code"])
+                st = status(cms, self.device_id, self.info["code"], self.info["poll_secret"])
                 fails = 0
                 if st.get("status") == "expired":
                     log.info("pairing code %s expired; registering a new one", self.info["code"])
@@ -138,6 +145,9 @@ def _selfcheck():
     assert not os.path.exists(p + ".tmp")
     assert local_deadline(1600, 1000) == 1570       # normal: refresh 30 s before expiry
     assert local_deadline(900, 1000) == 1060        # CMS clock behind: still show it 60 s
+    req = status_request("https://cms.example/", "pi-1", "K7Q-4M2", "ps_x")
+    assert req.full_url == "https://cms.example/api/devices/register/status?device_id=pi-1&code=K7Q-4M2"
+    assert req.get_header("Authorization") == "Bearer ps_x"
     did = device_id()
     assert did.startswith("pi-") and len(did) > 3
     print("pairing self-check OK")

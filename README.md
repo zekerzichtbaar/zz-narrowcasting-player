@@ -48,7 +48,7 @@ sudo reboot                           # once, so the kernel console text disappe
 
 `install.sh` does the following:
 
-- Installs the apt packages: `mpv chrony python3 python3-websockets python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base`. It uses no pip and no venv.
+- Installs the apt packages: `mpv chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base`. It uses no pip and no venv.
 - Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
 - Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
 - Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
@@ -128,7 +128,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | Key | Default | Meaning |
 |---|---|---|
 | `cms_url` | `"http://localhost:8080"` | CMS base URL. The device token lives in `<state_dir>/token` (0600, written by pairing). |
-| `manifest_poll` | `300` | Fallback manifest poll interval in seconds. The WebSocket update signal makes this mostly redundant. |
+| `manifest_poll` | `30` | Manifest poll interval in seconds. This poll is how new versions, group moments and unpublishes reach the screen. Re-running `install.sh` changes an old default of `300` to `30`. |
 | `offline_timeout` | `600` | Network lost while playing: keep playing this many seconds, then show wifi setup. |
 | `wifi_retry` | `120` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
 | `ntp_server` | `""` | chrony time source. Empty = the distro's internet pool. See [section 5](#5-time-sync-ntp). |
@@ -182,8 +182,11 @@ The CMS must render exactly **one** MP4 per group (full spec in
 
 The rest of the CMS contract is in [`docs/protocol.md`](docs/protocol.md). It covers the
 register/pairing endpoints, the manifest JSON (`version`, `url`, `sha256`, `size`,
-`duration`, `epoch`, `activate_at`) and the WebSocket messages in both directions
-(`update_available`, `screen_updated`, `unpaired`, `hello`, `heartbeat`, `download_failed`).
+`duration`, `epoch`, `activate_at`) and the heartbeat. Everything is plain HTTPS, no WebSocket:
+the Pi polls the manifest every 30 s (`GET /api/devices/manifest`) and posts a heartbeat every
+30 s and on every state/version change (`POST /api/devices/heartbeat` with `state`, `version`,
+`pending_version`, `drift_ms`). A `401` on either means the screen was unpaired. A new
+`version` with the same `sha256` (for example a new group moment) reuses the local file.
 
 ## 7. Local testing: mock CMS and test video
 
@@ -199,10 +202,11 @@ On the Pi, set `cms_url = "http://<your-machine>:8080"` in `/etc/pi-player/confi
 restart the service. Then:
 
 - **Pair:** open `http://<your-machine>:8080/pair` (or scan the QR code on the screen), enter the code, name and group.
-- **Publish:** `curl -X POST 'http://localhost:8080/admin/publish?file=test.mp4&delay=60'`. All screens switch 60 s from now. The mock logs every WebSocket message, including the heartbeats (`state`, `version`, `drift_ms`).
-- **Failed download:** add `&bad_sha=1`. The Pi rejects the file, keeps playing the old one, and sends `download_failed`.
+- **Publish:** `curl -X POST 'http://localhost:8080/admin/publish?file=test.mp4&delay=60'`. All screens switch 60 s from now (they pick it up at their next manifest poll, within 30 s). The mock logs every heartbeat (`state`, `version`, `pending_version`, `drift_ms`).
+- **Group wait + moment:** publish with `&wait=1` (screens download and report `pending_version`, a screen with nothing on it starts right away), then `curl -X POST 'http://localhost:8080/admin/activate?delay=45'`: same file, new version, every screen switches at the same moment without downloading again.
+- **Failed download:** add `&bad_sha=1`. The Pi rejects the file, keeps playing the old one, logs the mismatch and retries at the next poll.
 - **Unpublish:** `curl -X POST http://localhost:8080/admin/unpublish` (the screen goes to WAITING).
-- **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING).
+- **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING at its next poll or heartbeat).
 
 Without a Pi, you can run the agent on a laptop (mpv opens a window):
 `python3 -m pi_player --config my-dev-config.toml`, with `state_dir` and `mpv_socket`
@@ -212,7 +216,7 @@ writable, so content/pairing are off): `python3 -m pi_player --video media/test.
 Self-checks (pure logic, no hardware needed):
 
 ```sh
-for m in sync content ws state pairing netman portal; do python3 -m pi_player.$m || echo "FAIL $m"; done
+for m in sync content heartbeat state pairing netman portal; do python3 -m pi_player.$m || echo "FAIL $m"; done
 python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNGs to look at
 python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
 ```
@@ -281,6 +285,6 @@ Run `sudo pkill mpv` and `sudo systemctl kill pi-player`: playback should be bac
   `mpv_extra_args = ["--drm-mode=1920x1080@50"]`, or `hdmi_mode` in `/boot/firmware/config.txt`)
   is still an open question to settle during hardware testing.
 - **Update not switching:** run `journalctl -u pi-player | grep -i -e manifest -e download -e activated`.
-  A sha256 mismatch is rejected (the old video keeps playing) and the CMS gets `download_failed`.
+  A sha256 mismatch is rejected (the old video keeps playing) and retried at the next manifest poll.
   A Pi that finishes downloading after `activate_at` switches at the next loop boundary.
 - **Start over:** `sudo pi-player reset`.

@@ -9,7 +9,7 @@ DEFAULTS = {
     "state_dir": "/var/lib/pi-player",
     "video": "",
     "epoch": 0,
-    "manifest_poll": 300,
+    "manifest_poll": 30,
     "offline_timeout": 600,
     "wifi_retry": 120,
     "logo": "/etc/pi-player/logo.png",

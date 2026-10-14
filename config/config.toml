@@ -3,8 +3,9 @@
 
 # CMS base URL. Device token lives in <state_dir>/token (written by pairing).
 cms_url = "http://localhost:8080"
-# Fallback manifest poll (seconds); the WebSocket update signal makes this mostly redundant.
-manifest_poll = 300
+# Manifest poll (seconds): how fast a new version or group moment reaches this screen. The
+# heartbeat to the CMS also goes out every 30 s.
+manifest_poll = 30
 # Network lost while playing: keep playing this long (seconds), then show the wifi-setup screen.
 offline_timeout = 600
 # While the wifi-setup hotspot is up: every this many seconds drop it briefly and try the saved

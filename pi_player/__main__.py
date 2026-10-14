@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, config, content as content_mod, netman, pairing, screens, state, sync, ws
+from . import __version__, config, content as content_mod, heartbeat, netman, pairing, screens, state, sync
 from .mpv import Mpv, MpvError
 
 log = logging.getLogger("pi-player")
@@ -40,8 +40,8 @@ def wait_for_duration(mpv, timeout=15):
     raise MpvError("video duration unavailable (file not playable?)")
 
 
-def play_synced(mpv, cfg, content=None, keep_playing=lambda: True):
-    """Load the video and keep it on the group clock.
+def play_synced(mpv, cfg, content=None, keep_playing=lambda: True, tick=lambda: None):
+    """Load the video and keep it on the group clock. tick() runs every round (identifying).
 
     Returns "switch" when a new version is due, "leave" when keep_playing() turns false."""
     th = cfg["sync"]
@@ -57,18 +57,19 @@ def play_synced(mpv, cfg, content=None, keep_playing=lambda: True):
              video, man and man["version"], duration, epoch)
     speed = 1.0
     last_log = 0.0
-    ws.STATUS["state"] = "PLAYING"
+    heartbeat.STATUS["state"] = "PLAYING"
     while True:
         if not mpv.alive():
             raise MpvError("mpv died")
         if not keep_playing():
             return "leave"
+        tick()
         t0 = time.time()
         pos = mpv.time_pos()
         now = (t0 + time.time()) / 2  # midpoint of the IPC round trip
         if pos is not None:
             d = sync.drift(float(pos), sync.target_position(now, epoch, duration), duration)
-            ws.STATUS["drift_ms"] = d * 1000
+            heartbeat.STATUS["drift_ms"] = d * 1000
             action = sync.correction(d, th)
             if action[0] == "seek":
                 target = sync.target_position(time.time(), epoch, duration)
@@ -108,6 +109,7 @@ class Agent:
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.time())
         self.shown = None  # key of the screen on mpv; None = video or nothing
+        self.identified = 0  # identify_until already put on the OSD
 
     def state(self):
         now = time.time()
@@ -149,6 +151,18 @@ class Agent:
             self.mpv.command("stop")
         self.shown = key
 
+    def identify(self):
+        """"Scherm identificeren": the screen name on the OSD until identify_until, once per value
+        (mpv keeps it up for the duration, also over a loadfile)."""
+        until = self.content.identify_until() if self.content else 0
+        if until == self.identified:
+            return
+        self.identified = until
+        osd = content_mod.identify_osd(self.content.screen_name(), until, time.time())
+        if osd:
+            self.mpv.show_text(*osd)
+            log.info("identifying as %r for %.0f s", osd[0], osd[1] / 1000)
+
     def loop(self):
         last = None
         while True:
@@ -158,11 +172,11 @@ class Agent:
             if st != last:
                 log.info("state %s -> %s", last, st)
                 last = st
-            ws.STATUS["state"] = st
+            heartbeat.STATUS["state"] = st
             if self.wifi:
                 self.wifi.want(st == state.WIFI_SETUP)
             if st != state.PLAYING:
-                ws.STATUS["drift_ms"] = None
+                heartbeat.STATUS["drift_ms"] = None
             due = self.content.due(time.time()) if self.content else None
             if due is not None and due <= 0:
                 switch(self.content, self.cfg)
@@ -170,10 +184,11 @@ class Agent:
             if st == state.PLAYING:
                 self.shown = None
                 if play_synced(self.mpv, self.cfg, self.content,
-                               lambda: self.state() == state.PLAYING) == "switch":
+                               lambda: self.state() == state.PLAYING, self.identify) == "switch":
                     switch(self.content, self.cfg)
                 continue
             self.show(self.screen_key(st))
+            self.identify()
             time.sleep(1)
 
 
@@ -198,9 +213,7 @@ def run(cfg):
         if content:
             pair = pairing.Pairing(cfg, content)
             pair.start()
-            link = ws.Link(cfg, content)
-            content.on_download_failed = link.download_failed
-            link.start()
+            heartbeat.Heartbeat(cfg, content).start()
             monitor = netman.Monitor(cfg["cms_url"]).start()
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()

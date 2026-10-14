@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import threading
 import time
 import urllib.error
@@ -39,12 +40,23 @@ def switch_time(manifest, ready_at, have_current=True):
     return epoch + math.ceil((ready_at - epoch) / dur) * dur
 
 
+def identify_osd(name, until, now):
+    """mpv show-text for "Scherm identificeren": (text, duration_ms) while until (Unix s) lies
+    ahead and there is a name, else None."""
+    ms = int((float(until or 0) - now) * 1000)
+    return (name, ms) if name and ms > 0 else None
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _same_file(a, b):
+    return bool(a.get("sha256")) and a.get("sha256", "").lower() == b.get("sha256", "").lower()
 
 
 def _same_host(a, b):
@@ -55,7 +67,8 @@ def _same_host(a, b):
 # ---------- I/O ----------
 
 def fetch_manifest(cms_url, token, timeout=15):
-    """Return the manifest dict, None for 204 (no content). Raises Unauthorized on 401."""
+    """Return the manifest dict, None for 204 (no content). A 200 with version null (nothing to play
+    while identifying) comes back as is. Raises Unauthorized on 401."""
     req = urllib.request.Request(cms_url.rstrip("/") + "/api/devices/manifest",
                                  headers={"Authorization": f"Bearer {token}"})
     try:
@@ -67,7 +80,8 @@ def fetch_manifest(cms_url, token, timeout=15):
         if e.code == 401:
             raise Unauthorized() from e
         raise
-    m["url"] = urllib.parse.urljoin(cms_url.rstrip("/") + "/", m["url"])
+    if m.get("url"):
+        m["url"] = urllib.parse.urljoin(cms_url.rstrip("/") + "/", m["url"])
     return m
 
 
@@ -75,7 +89,7 @@ def download(manifest, dest, token=None, cms_url="", timeout=30, on_fail=None):
     """Download to dest.part, verify sha256, os.replace to dest. Returns True on success.
 
     On any failure the .part is removed and dest (and current.mp4) are left untouched, and
-    on_fail(version, reason) is called (WS download_failed).
+    on_fail(version, reason) is called.
     """
     part = dest + ".part"
     headers = {}
@@ -98,6 +112,23 @@ def download(manifest, dest, token=None, cms_url="", timeout=30, on_fail=None):
         log.warning("download of %s failed: %s", manifest.get("version"), e)
         if on_fail:
             on_fail(manifest.get("version"), str(e))
+        try:
+            os.unlink(part)
+        except FileNotFoundError:
+            pass
+        return False
+
+
+def copy_file(src, dest):
+    """Copy via dest.part + os.replace (a real copy: a hard link would make the later
+    os.replace(next, current) a no-op). Returns True on success."""
+    part = dest + ".part"
+    try:
+        shutil.copyfile(src, part)
+        os.replace(part, dest)
+        return True
+    except OSError as e:
+        log.warning("copying %s failed: %s", src, e)
         try:
             os.unlink(part)
         except FileNotFoundError:
@@ -149,7 +180,7 @@ class Content:
         os.makedirs(self.dir, exist_ok=True)
         self.state = load_state(self.dir)
         self.switch_at = None  # set once next.mp4 is verified and waiting
-        self.on_download_failed = None  # callback(version, reason), set by the WS link
+        self.identify = 0  # identify_until (Unix s) of the last manifest; not persisted
         p = self.state["pending"]
         if p and os.path.exists(self.next):  # survived a restart: verified earlier
             self.switch_at = switch_time(p, time.time(), self.has_current())
@@ -164,14 +195,14 @@ class Content:
             return None
 
     def forget_token(self):
-        """Unpaired/revoked: delete the token so fetching (and the WS link) stops."""
+        """Unpaired/revoked: delete the token so fetching and the heartbeat stop."""
         try:
             os.unlink(os.path.join(self.dir, "token"))
         except FileNotFoundError:
             pass
 
     def set_screen(self, screen):
-        """Screen name/group from the pairing claim, a manifest or a WS screen_updated."""
+        """Screen name/group from the pairing claim or a manifest."""
         with self.lock:
             if screen != self.state.get("screen"):
                 self.state["screen"] = screen
@@ -194,6 +225,10 @@ class Content:
                     pass
             self.state["current"], self.state["pending"], self.switch_at = None, None, None
             save_state(self.dir, self.state)
+
+    def identify_until(self):
+        with self.lock:
+            return self.identify
 
     def has_current(self):
         return os.path.exists(self.current)
@@ -225,16 +260,22 @@ class Content:
             return self.state["current"]
 
     def check(self):
-        """One manifest fetch + download if needed. Called from the background thread."""
+        """One manifest fetch + download if needed. Called from the background thread.
+
+        `version` is compared for equality only. A new version with the same file (sha256) as
+        the one waiting or on screen is not downloaded again: the CMS makes a new version for a
+        new group moment (activate_at/epoch) without a new file."""
         token = self.token()
         if not token:
             return
         m = fetch_manifest(self.cfg["cms_url"], token)
-        if m is None:
+        with self.lock:  # identifying is outside version: take it from every answer
+            self.identify = float((m or {}).get("identify_until") or 0)
+        if m and m.get("screen"):
+            self.set_screen(m["screen"])
+        if m is None or m.get("version") is None:
             self.clear()
             return
-        if m.get("screen"):
-            self.set_screen(m["screen"])
         with self.lock:
             cur, pend = self.state["current"], self.state["pending"]
         if cur and cur["version"] == m["version"] and self.has_current():
@@ -243,32 +284,40 @@ class Content:
                     self.state["pending"], self.switch_at = None, None
                     save_state(self.dir, self.state)
             return
-        if pend and pend["version"] == m["version"]:
-            if pend.get("activate_at") != m.get("activate_at"):  # CMS moved the activation
+        if pend and _same_file(pend, m) and os.path.exists(self.next):
+            if pend != m:  # new version/activation for the file that is already waiting
                 with self.lock:
                     self.state["pending"] = m
                     self.switch_at = switch_time(m, time.time(), self.has_current())
                     save_state(self.dir, self.state)
+                log.info("version %s (same file as %s), switching at %.3f",
+                         m["version"], pend["version"], self.switch_at)
             return
-        log.info("new version %s, downloading %s", m["version"], m["url"])
         with self.lock:  # a newer version supersedes a waiting one
             self.switch_at = None
             self.state["pending"] = None
-        if not download(m, self.next, token, self.cfg["cms_url"], on_fail=self.on_download_failed):
-            return
+        if cur and _same_file(cur, m) and self.has_current():
+            # Same file as on screen, new clock (e.g. the group moment): reuse it, switch on time.
+            if not copy_file(self.current, self.next):
+                return
+            log.info("version %s is the file on screen (%s); no download", m["version"], cur["version"])
+        else:
+            log.info("new version %s, downloading %s", m["version"], m["url"])
+            if not download(m, self.next, token, self.cfg["cms_url"]):
+                return
         now = time.time()
         with self.lock:
             self.state["pending"] = m
             self.switch_at = switch_time(m, now, self.has_current())
             save_state(self.dir, self.state)
-        log.info("version %s verified, switching at %.3f (in %.1f s)",
+        log.info("version %s ready, switching at %.3f (in %.1f s)",
                  m["version"], self.switch_at, self.switch_at - now)
 
     def start(self):
         threading.Thread(target=self._loop, name="content", daemon=True).start()
 
     def poke(self):
-        """Fetch the manifest now (e.g. on a WS update_available)."""
+        """Fetch the manifest now (e.g. right after pairing)."""
         self.wake.set()
 
     def _loop(self):
@@ -302,15 +351,27 @@ def _selfcheck():
     # late switches land on a boundary for every screen, whenever each one finished
     assert switch_time(m, 1003.0) == switch_time(m, 1019.9)
 
+    # identify overlay: name + ms left while ahead, nothing once past or without a name
+    assert identify_osd("Kantine", 1060.0, 1000.0) == ("Kantine", 60000)
+    assert identify_osd("Kantine", 1000.0, 1000.0) is None
+    assert identify_osd("Kantine", 0, 1000.0) is None and identify_osd("Kantine", None, 1000.0) is None
+    assert identify_osd(None, 1060.0, 1000.0) is None
+
     tmp = tempfile.mkdtemp(prefix="pi-player-content-")
     try:
         good, bad = b"good video bytes" * 1000, b"tampered"
         open(os.path.join(tmp, "a.mp4"), "wb").write(good)
         open(os.path.join(tmp, "b.mp4"), "wb").write(bad)
 
+        hits = []
+
         class H(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *a, **k):
                 super().__init__(*a, directory=tmp, **k)
+
+            def do_GET(self):
+                hits.append(self.path)
+                super().do_GET()
 
             def log_message(self, *a):
                 pass
@@ -339,7 +400,7 @@ def _selfcheck():
         assert open(cur, "rb").read() == b"old video"
 
         # atomic swap via Content.activate + state.json round trip
-        c = Content({"state_dir": tmp, "cms_url": base, "manifest_poll": 300})
+        c = Content({"state_dir": tmp, "cms_url": base, "manifest_poll": 30})
         man = {"version": "v2", "duration": 60.0, "epoch": 0, "activate_at": 0}
         c.state["pending"], c.switch_at = man, 0.0
         assert c.due(10.0) <= 0
@@ -361,6 +422,68 @@ def _selfcheck():
         open(os.path.join(tmp, "token"), "w").write("t\n")
         assert os.path.join(tmp, "token") in reset(tmp)
         assert not any(os.path.exists(os.path.join(tmp, n)) for n in ("token", "state.json", "current.mp4"))
+
+        # check(): manifest poll walk-through (fetch_manifest stubbed, files from the test server)
+        global fetch_manifest
+        real_fetch, served = fetch_manifest, {}
+        fetch_manifest = lambda cms_url, token: served["m"]
+        try:
+            open(os.path.join(tmp, "token"), "w").write("t\n")
+            c = Content({"state_dir": tmp, "cms_url": base, "manifest_poll": 30})
+            other = b"other video" * 1000
+            open(os.path.join(tmp, "c.mp4"), "wb").write(other)
+            wait = {"version": "7-4102444800-abc", "url": base + "a.mp4", "sha256": sha_good,
+                    "duration": 60.0, "epoch": 0, "activate_at": 4102444800}
+            # waiting for the group with nothing on screen: download, show right away
+            served["m"], hits[:] = wait, []
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() == wait["version"] and c.due(time.time()) <= 0
+            assert c.activate() == wait and open(cur, "rb").read() == good
+            c.check()  # same version again: nothing
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.identify_until() == 0
+            # identifying: same version, nothing downloaded, identify_until taken over
+            served["m"] = {**wait, "identify_until": 4102444860}
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.identify_until() == 4102444860
+            served["m"] = wait
+            c.check()
+            assert c.identify_until() == 0
+            # group moment: new version, same file -> no download, switch exactly at activate_at
+            t = time.time() + 45
+            moment = {**wait, "version": f"7-{int(t)}-abc", "activate_at": t, "epoch": t}
+            served["m"] = moment
+            c.check()
+            assert hits == ["/a.mp4"] and open(nxt, "rb").read() == good
+            assert c.pending_version() == moment["version"] and c.switch_at == t
+            assert load_state(tmp)["pending"] == moment
+            # moment moved (same file waiting in next.mp4): only the switch time changes
+            moved = {**moment, "version": f"7-{int(t) + 10}-abc", "activate_at": t + 10, "epoch": t + 10}
+            served["m"] = moved
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() == moved["version"] and c.switch_at == t + 10
+            # really new file: downloaded, supersedes the waiting one
+            new = {**moved, "version": "8-0-def", "url": base + "c.mp4",
+                   "sha256": hashlib.sha256(other).hexdigest(), "activate_at": 0, "epoch": 0}
+            served["m"] = new
+            c.check()
+            assert hits == ["/a.mp4", "/c.mp4"] and c.pending_version() == "8-0-def"
+            assert open(nxt, "rb").read() == other
+            # CMS rolls back to what is on screen: pending dropped
+            served["m"] = wait
+            c.check()
+            assert c.pending_version() is None and c.due(time.time()) is None
+            # nothing to play while identifying: like a 204, but the name still shows
+            served["m"] = {"version": None, "identify_until": 4102444860,
+                           "screen": {"id": 1, "name": "Kantine", "group_id": None}}
+            c.check()
+            assert not c.has_current() and c.current_manifest() is None and c.pending_version() is None
+            assert c.identify_until() == 4102444860 and c.screen_name() == "Kantine"
+            # 204: everything gone
+            served["m"] = None
+            c.check()
+            assert not c.has_current() and c.current_manifest() is None and c.identify_until() == 0
+        finally:
+            fetch_manifest = real_fetch
         srv.shutdown()
     finally:
         shutil.rmtree(tmp)
