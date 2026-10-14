@@ -54,6 +54,27 @@ apply_cmdline() {
   echo changed
 }
 
+# HDMI mode from config `display_mode` (e.g. 1920x1080@50): set or replace the kernel's
+# video=HDMI-A-1:... token, which kmssink plays in. Empty = leave the cmdline alone.
+apply_video_mode() {
+  local file="$1" mode="$2" line new
+  [[ -f "$file" && -n "$mode" ]] || return 0
+  if [[ ! "$mode" =~ ^[0-9]+x[0-9]+@[0-9]+$ ]]; then
+    echo "    ignoring invalid display_mode '$mode'" >&2
+    return 0
+  fi
+  line="$(head -n1 "$file" | tr -d '\r')"
+  if [[ " $line " =~ [[:space:]]video=HDMI-A-1:[^[:space:]]* ]]; then
+    new="${line/${BASH_REMATCH[0]# }/video=HDMI-A-1:$mode}"
+  else
+    new="$line video=HDMI-A-1:$mode"
+  fi
+  [[ "$new" != "$line" ]] || return 0
+  [[ -e "$file.pi-player.bak" ]] || cp -p "$file" "$file.pi-player.bak"
+  printf '%s\n' "$new" > "$file.tmp" && mv "$file.tmp" "$file"
+  echo changed
+}
+
 [[ "${PI_PLAYER_INSTALL_LIB:-}" == 1 ]] && return 0 2>/dev/null
 
 if [[ $EUID -ne 0 ]]; then
@@ -72,8 +93,10 @@ fi
 echo "==> packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q --no-install-recommends mpv chrony python3 \
-  python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base
+apt-get install -y -q --no-install-recommends chrony python3 \
+  python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base \
+  python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-libav
 
 echo "==> files"
 install -d -m 0755 "$APP"
@@ -133,7 +156,10 @@ echo "==> clean HDMI console"
 REBOOT=""
 for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
   if [[ -f "$f" ]]; then
-    [[ -n "$(apply_cmdline "$f")" ]] && REBOOT=1 && echo "    updated $f (backup: $f.pi-player.bak)"
+    DISPLAY_MODE="$(PYTHONPATH="$APP" python3 -c 'import sys; from pi_player import config; print(config.load(sys.argv[1])["display_mode"])' "$ETC/config.toml")"
+    if [[ -n "$(apply_cmdline "$f")$(apply_video_mode "$f" "$DISPLAY_MODE")" ]]; then
+      REBOOT=1 && echo "    updated $f (backup: $f.pi-player.bak)"
+    fi
     break
   fi
 done
@@ -147,7 +173,7 @@ systemctl restart pi-player.service
 
 echo "==> done. Logs: journalctl -u pi-player -f"
 if [[ -n "$REBOOT" ]]; then
-  echo "    kernel cmdline changed: reboot once to hide console text (sudo reboot)"
+  echo "    kernel cmdline changed: reboot once (console text, HDMI mode): sudo reboot"
 fi
 if [[ ! -e "$STATE/current.mp4" ]]; then
   echo "    no video yet: copy one to $STATE/current.mp4 (see scripts/make_test_video.sh)"

@@ -142,7 +142,7 @@ Fields:
 | `duration` | float | Exact video duration in seconds (frames / fps). Used for sync math. |
 | `epoch` | float | Sync reference: frame 0 plays at `epoch + k * duration`. Same for all screens in a group. Default `0`. |
 | `activate_at` | float | Unix time from which this version may be shown. All screens in a group get the same value. `0` = right away (at the next loop boundary when something already plays). |
-| `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big over whatever is on screen until this Unix time (mpv `show-text`). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
+| `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big, full screen, instead of the video or setup screen until this Unix time (the video re-joins the group clock afterwards). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = (now - epoch) mod duration`.

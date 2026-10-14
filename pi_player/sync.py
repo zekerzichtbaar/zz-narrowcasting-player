@@ -1,11 +1,11 @@
-"""Clock-based sync math. Pure functions; self-check: python3 -m pi_player.sync"""
+"""Clock-based sync math. Pure functions; self-check: python3 -m pi_player.sync
 
-DEFAULTS = {
-    "deadband": 0.020,     # |drift| below this (s): do nothing (~half a frame at 25 fps)
-    "seek_threshold": 0.5, # |drift| above this (s): hard seek
-    "gain": 0.5,           # speed = 1 - gain * drift   (drift in s); P-only, < 2 for stability at 1 s interval
-    "max_nudge": 0.02,     # speed clamped to 1 +/- max_nudge
-}
+Every screen shows position (now - epoch) mod duration. GStreamer renders a frame at
+base_time + running_time, and running time restarts at 0 on the position we seek to, so a
+player is on the group clock iff (base_time - epoch) mod duration == that position. Looping
+with non-flushing segment seeks adds exactly one duration of running time per loop, so one
+correct base time keeps a screen locked forever: no drift measuring or speed nudging needed.
+"""
 
 
 def target_position(now, epoch, duration):
@@ -19,20 +19,10 @@ def drift(actual, target, duration):
     return d - duration if d >= duration / 2 else d
 
 
-def correction(drift, thresholds=None):
-    """Decide what to do about a drift (s, positive = ahead).
-
-    Returns ("noop",), ("speed", x) or ("seek",). For a seek the caller seeks to the
-    current target_position (it knows `now`; we don't).
-    """
-    t = {**DEFAULTS, **(thresholds or {})}
-    a = abs(drift)
-    if a < t["deadband"]:
-        return ("noop",)
-    if a > t["seek_threshold"]:
-        return ("seek",)
-    nudge = max(-t["max_nudge"], min(t["max_nudge"], t["gain"] * drift))
-    return ("speed", round(1.0 - nudge, 4))
+def base_time_ns(epoch, duration, position, not_before):
+    """Earliest clock time >= not_before at which media `position` is due (all ints, ns)."""
+    k = -((epoch + position - not_before) // duration)  # ceil((not_before - epoch - position) / duration)
+    return epoch + position + k * duration
 
 
 def _selfcheck():
@@ -49,19 +39,16 @@ def _selfcheck():
     assert abs(drift(10.3, 10.0, 60) - 0.3) < 1e-9
     assert abs(drift(9.7, 10.0, 60) - (-0.3)) < 1e-9
 
-    # each threshold branch
-    assert correction(0.0) == ("noop",)
-    assert correction(0.019) == ("noop",)
-    assert correction(-0.019) == ("noop",)
-    assert correction(0.6) == ("seek",)
-    assert correction(-0.6) == ("seek",)
-    assert correction(0.03) == ("speed", 0.985)   # ahead -> slow down
-    assert correction(-0.03) == ("speed", 1.015)  # behind -> speed up
-    assert correction(0.4) == ("speed", 0.98)   # clamped
-    assert correction(-0.4) == ("speed", 1.02)  # clamped
-    # custom thresholds
-    assert correction(0.1, {"seek_threshold": 0.05}) == ("seek",)
-    assert correction(0.1, {"deadband": 0.2}) == ("noop",)
+    # base time: the position is due exactly on the shared timeline, at or after not_before
+    assert base_time_ns(0, 60, 10, 0) == 10
+    assert base_time_ns(0, 60, 10, 10) == 10   # exactly on time is fine
+    assert base_time_ns(0, 60, 10, 11) == 70   # missed it -> next loop
+    assert base_time_ns(0, 60, 10, 125) == 130
+    assert base_time_ns(1000, 60, 0, 990) == 1000   # not_before ahead of the epoch
+    assert base_time_ns(1000, 60, 5, 900) == 945    # before the epoch: still on the timeline
+    for nb in (0, 7, 59, 60, 61, 10**12 + 3):
+        b = base_time_ns(17, 60, 23, nb)
+        assert b >= nb and b - nb < 60 and target_position(b, 17, 60) == 23
     print("sync self-check OK")
 
 

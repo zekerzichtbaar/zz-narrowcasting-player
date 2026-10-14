@@ -9,7 +9,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Blank tty1 and hide its text cursor before mpv takes over the screen ("-" = best effort).
+# Blank tty1 and hide its text cursor before the player takes over the screen ("-" = best effort).
 ExecStartPre=-/bin/sh -c 'TERM=linux setterm --cursor off --clear all > /dev/tty1'
 ExecStart=/usr/bin/python3 -m pi_player
 WorkingDirectory=/opt/pi-player
@@ -19,7 +19,7 @@ RuntimeDirectory=pi-player
 StateDirectory=pi-player
 StateDirectoryMode=0700
 Restart=always
-# mpv crash -> agent exits 1; agent crash/kill -> back up in ~2 s (DoD: < 10 s).
+# video pipeline error -> agent exits 1; agent crash/kill -> back up in ~2 s (DoD: < 10 s).
 RestartSec=2
 StandardInput=tty-force
 TTYPath=/dev/tty1

@@ -1,4 +1,4 @@
-"""Setup screens rendered as 1920x1080 PNGs (Pillow + qrcode), shown by mpv like any file.
+"""Setup screens rendered as 1920x1080 PNGs (Pillow + qrcode), shown on HDMI by gst.Display.
 
 Preview: python3 -m pi_player.screens OUT_DIR
 """
@@ -112,6 +112,16 @@ def waiting(path, name=None, footer="", logo=None):
     return _save(img, path)
 
 
+def identify(path, name, footer="", logo=None):
+    """"Scherm identificeren": the screen name, huge, so you can see which screen is which."""
+    from PIL import ImageDraw
+    img = _canvas(logo)
+    d = ImageDraw.Draw(img)
+    _text(d, (W // 2, H // 2), name, 160, ACCENT, bold=True, anchor="mm")
+    _footer(d, footer)
+    return _save(img, path)
+
+
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
                portal_url="http://10.42.0.1"):
     """Hotspot SSID + password + join-QR. ssid None -> no hotspot (no wifi adapter / dev box /
@@ -155,6 +165,7 @@ if __name__ == "__main__":
     print(pairing(os.path.join(out, "pairing-connecting.png"), footer=f))
     print(waiting(os.path.join(out, "waiting.png"), "Kantine links", f))
     print(waiting(os.path.join(out, "waiting-noname.png"), None, f))
+    print(identify(os.path.join(out, "identify.png"), "Kantine links", f))
     print(wifi_setup(os.path.join(out, "wifi.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-error.png"), "Narrowcast-1E2F", "k7q4m2xa",
                      error="Could not connect to Kantine: Wrong password?", footer=f))

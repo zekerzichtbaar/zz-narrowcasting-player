@@ -41,7 +41,7 @@ def switch_time(manifest, ready_at, have_current=True):
 
 
 def identify_osd(name, until, now):
-    """mpv show-text for "Scherm identificeren": (text, duration_ms) while until (Unix s) lies
+    """"Scherm identificeren" name card: (text, duration_ms) while until (Unix s) lies
     ahead and there is a name, else None."""
     ms = int((float(until or 0) - now) * 1000)
     return (name, ms) if name and ms > 0 else None

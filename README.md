@@ -48,21 +48,21 @@ sudo reboot                           # once, so the kernel console text disappe
 
 `install.sh` does the following:
 
-- Installs the apt packages: `mpv chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base`. It uses no pip and no venv.
+- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav`). It uses no pip and no venv.
 - Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
 - Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
 - Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
 - Adds the captive-portal DNS drop-in for the setup hotspot (`/etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf`).
 - Sets the wifi country if none is set, and runs `rfkill unblock wifi`.
 - Writes the chrony drop-in from `ntp_server` (see [section 5](#5-time-sync-ntp)).
-- Adds any missing kernel cmdline tokens to `/boot/firmware/cmdline.txt` for a clean console: `consoleblank=0 vt.global_cursor_default=0 quiet loglevel=3 logo.nologo`. Tokens that are already there are never duplicated. If you already set one of these keys yourself (e.g. `loglevel=7`), your value is left alone. A one-time backup is saved as `cmdline.txt.pi-player.bak`. You need to **reboot** before the change takes effect.
+- Adds any missing kernel cmdline tokens to `/boot/firmware/cmdline.txt` for a clean console: `consoleblank=0 vt.global_cursor_default=0 quiet loglevel=3 logo.nologo`. Tokens that are already there are never duplicated. If you already set one of these keys yourself (e.g. `loglevel=7`), your value is left alone. A one-time backup is saved as `cmdline.txt.pi-player.bak`. It also sets `video=HDMI-A-1:<display_mode>` (default `1920x1080@60`), replacing an existing `video=HDMI-A-1:` token. You need to **reboot** before the change takes effect.
 - Installs and enables `pi-player.service`, then restarts it.
 
 **Upgrading:** re-run `sudo ./install.sh` from a newer checkout. The script is idempotent: it
 keeps your config, token, videos and pairing.
 
 The service starts on boot and takes over tty1 (the login prompt on HDMI is disabled). It runs
-with `Restart=always`, `RestartSec=2` and `StartLimitIntervalSec=0`. If mpv dies, the agent
+with `Restart=always`, `RestartSec=2` and `StartLimitIntervalSec=0`. If the video pipeline fails, the agent
 exits, and if the agent dies or is killed, systemd starts it again within about 2 seconds. It
 never gives up, and on restart it shows whatever state is correct at that moment.
 
@@ -136,22 +136,20 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `state_dir` | `"/var/lib/pi-player"` | Token, `current.mp4`, `next.mp4`, `state.json`. |
 | `video` | `""` | Video to play. Empty = `<state_dir>/current.mp4`. |
 | `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
-| `mpv_bin` | `"mpv"` | mpv binary. |
-| `mpv_socket` | `"/run/pi-player/mpv.sock"` | mpv JSON IPC socket. |
-| `mpv_extra_args` | `[]` | Extra mpv arguments, e.g. `["--drm-mode=1920x1080@50"]`. |
-| `[sync] interval` | `1.0` | How often to measure drift (s). |
-| `[sync] deadband` | `0.020` | If \|drift\| is below this, do nothing (s). |
-| `[sync] seek_threshold` | `0.5` | If \|drift\| is above this, hard seek (s). |
-| `[sync] gain` | `0.5` | Proportional gain: `speed = 1 - gain*drift`. |
-| `[sync] max_nudge` | `0.02` | Speed is limited to `1 ± max_nudge` (0.98–1.02). |
+| `display_mode` | `"1920x1080@60"` | HDMI mode, set on the kernel cmdline by `install.sh` (re-run + reboot after changing). Smoothest when the refresh is a multiple of the fps: `@60` for 30 fps, `@50` for 25 fps. Many PC monitors reject `@50` ("Out of range"); TVs accept both. Empty = leave the cmdline alone. |
+| `video_sink` | `"kmssink"` | GStreamer sink, plus properties (e.g. `"kmssink connector-id=32"` with two HDMI outputs). Dev machine: `"autovideosink"`. |
+| `[sync] interval` | `1.0` | How often to check the position (s). |
+| `[sync] seek_threshold` | `0.5` | If \|drift\| is above this (clock stepped, pipeline stalled), re-join the group clock (s). |
 
 The CLI is `pi-player [run|reset] [--config PATH] [--video PATH] [--epoch N]`.
 
 ## 5. Time sync (NTP)
 
-There is no master screen. Each Pi computes `position = (now - epoch) mod duration` and
-gently corrects mpv toward it. Sync between screens is therefore only as good as the
-agreement between their clocks. chrony keeps the clocks aligned.
+There is no master screen. The video plays in GStreamer on the system clock, with its start
+time chosen so that media position `p` is on screen at `epoch + p` (`pi_player/sync.py`). It
+loops with gapless segment seeks, so every loop adds exactly one duration and nothing ever
+needs correcting. Sync between screens is therefore only as good as the agreement between
+their clocks. chrony keeps the clocks aligned.
 
 - `ntp_server = ""` (the default) uses Debian's internet pool. That is usually fine to a few
   ms, but screens behind the same router can still differ by a few ms.
@@ -208,9 +206,9 @@ restart the service. Then:
 - **Unpublish:** `curl -X POST http://localhost:8080/admin/unpublish` (the screen goes to WAITING).
 - **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING at its next poll or heartbeat).
 
-Without a Pi, you can run the agent on a laptop (mpv opens a window):
-`python3 -m pi_player --config my-dev-config.toml`, with `state_dir` and `mpv_socket`
-pointing at writable paths. To play just a file with sync and no CMS (dev machine where `/var/lib/pi-player` isn't
+Without a Pi, you can run the agent on Linux with GStreamer (`video_sink = "autovideosink"`
+opens a window): `python3 -m pi_player --config my-dev-config.toml`, with `state_dir`
+pointing at a writable path. To play just a file with sync and no CMS (dev machine where `/var/lib/pi-player` isn't
 writable, so content/pairing are off): `python3 -m pi_player --video media/test.mp4`.
 
 Self-checks (pure logic, no hardware needed):
@@ -242,7 +240,7 @@ In `journalctl -u pi-player -f`, look for `hotspot ... up`, `portal on` and `wif
 
 **Pairing and playback:** pair via the code (expect WAITING or PLAYING with no reboot). Reboot
 and check that the video plays fullscreen, muted and looping, with no console text or cursor.
-Run `sudo pkill mpv` and `sudo systemctl kill pi-player`: playback should be back within
+Run `sudo systemctl kill pi-player`: playback should be back within
 10 s. Unpair in the mock and check that the pairing code comes back.
 
 **Sync** (2–3 Pis side by side, same group):
@@ -261,8 +259,8 @@ Run `sudo pkill mpv` and `sudo systemctl kill pi-player`: playback should be bac
 
 ## 9. Troubleshooting
 
-- **Logs:** `journalctl -u pi-player -f` (agent, mpv, wifi, pairing, drift), `systemctl status pi-player`.
-- **Black screen / nothing on HDMI:** check `journalctl -u pi-player` for mpv errors. Make
+- **Logs:** `journalctl -u pi-player -f` (agent, display, wifi, pairing, drift + dropped frames once a minute), `systemctl status pi-player`.
+- **Black screen / nothing on HDMI:** check `journalctl -u pi-player` for `display:` errors. Make
   sure the HDMI cable was connected at boot, and confirm nothing else holds DRM (no desktop
   installed).
 - **Console text or cursor still visible:** reboot once after the install (the cmdline change
@@ -275,15 +273,16 @@ Run `sudo pkill mpv` and `sudo systemctl kill pi-player`: playback should be bac
 - **Joined wifi but stuck at "Connecting to the CMS…":** the wifi has no route to the CMS.
   Check `cms_url` and the network. `sudo pi-player reset` (or plugging in ethernet) gets you
   back to setup.
-- **Screens drift apart:** check the clocks first (`chronyc tracking` on each Pi, offsets
-  should be ≪ 10 ms). Use a LAN time source ([section 5](#5-time-sync-ntp)). Then tune `[sync]`:
-  - Constant small offset: raise `gain`.
-  - Speed oscillates: lower `gain` or widen `deadband`.
-  - Frequent seeks: raise `seek_threshold`.
-- **Judder / uneven motion:** the HDMI refresh rate doesn't match the video fps. 25 fps
-  plays best at 50 Hz and 30 fps at 60 Hz. Forcing the mode (e.g.
-  `mpv_extra_args = ["--drm-mode=1920x1080@50"]`, or `hdmi_mode` in `/boot/firmware/config.txt`)
-  is still an open question to settle during hardware testing.
+- **Screens drift apart:** check the clocks (`chronyc tracking` on each Pi, offsets should be
+  ≪ 10 ms) and use a LAN time source ([section 5](#5-time-sync-ntp)). The player itself
+  doesn't drift: frame timing is locked to the clock.
+- **"Out of range" / no signal:** the screen doesn't accept `display_mode` (PC monitors often
+  reject 50 Hz). Set `display_mode = "1920x1080@60"`, re-run `install.sh`, reboot.
+- **Judder / uneven motion:** the HDMI refresh rate doesn't match the video fps (30 fps needs
+  60 Hz, 25 fps needs 50 Hz). Prefer 30 fps exports: 60 Hz works on every screen. Check `display_mode`, re-run `install.sh`, reboot, and verify
+  with `cat /proc/cmdline`. The once-a-minute log line shows `dropped` frames; it should stay 0.
+- **Software decoding (high CPU):** the log says `avdec` / no `v4l2h264dec`. The Pi decoder
+  needs an H.264 High ≤ 4.2 yuv420p stream; untagged colour is handled.
 - **Update not switching:** run `journalctl -u pi-player | grep -i -e manifest -e download -e activated`.
   A sha256 mismatch is rejected (the old video keeps playing) and retried at the next manifest poll.
   A Pi that finishes downloading after `activate_at` switches at the next loop boundary.

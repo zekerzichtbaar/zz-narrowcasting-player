@@ -26,15 +26,15 @@ video = ""
 # Sync reference: frame 0 plays at epoch + k*duration (Unix seconds). The manifest overrides this.
 epoch = 0
 
-# mpv
-mpv_bin = "mpv"
-mpv_socket = "/run/pi-player/mpv.sock"
-mpv_extra_args = []
+# HDMI mode, written to the kernel cmdline by install.sh (re-run it + reboot after changing).
+# Smoothest when the refresh rate is a multiple of the video fps: @60 for 30 fps, @50 for
+# 25 fps. Many PC monitors reject @50 ("Out of range"); TVs accept both. Empty = leave alone.
+display_mode = "1920x1080@60"
+# GStreamer video sink (plus properties). Pi: "kmssink"; e.g. "kmssink connector-id=32" when
+# more than one HDMI output is connected. Dev machine: "autovideosink".
+video_sink = "kmssink"
 
-# Drift correction (seconds). Real hardware needs tuning.
+# Frame timing is locked to the system clock by GStreamer; this is only a safety net.
 [sync]
-interval = 1.0        # how often to measure drift
-deadband = 0.020      # |drift| below this: do nothing
-seek_threshold = 0.5  # |drift| above this: hard seek
-gain = 0.5            # speed = 1 - gain*drift
-max_nudge = 0.02      # speed limited to 0.98..1.02
+interval = 1.0        # how often to check the position (s)
+seek_threshold = 0.5  # |drift| above this (s; clock stepped, pipeline stalled): re-join the clock

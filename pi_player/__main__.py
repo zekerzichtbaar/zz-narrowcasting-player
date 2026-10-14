@@ -13,83 +13,53 @@ import sys
 import tempfile
 import time
 
-from . import __version__, config, content as content_mod, heartbeat, netman, pairing, screens, state, sync
-from .mpv import Mpv, MpvError
+from . import __version__, config, content as content_mod, heartbeat, netman, pairing, screens, state
+from .gst import Display, DisplayError
 
 log = logging.getLogger("pi-player")
 
 
-def socket_path(wanted):
-    try:
-        os.makedirs(os.path.dirname(wanted), exist_ok=True)
-        return wanted
-    except OSError:  # dev machine without /run access
-        return os.path.join(tempfile.gettempdir(), "pi-player-mpv.sock")
-
-
-def wait_for_duration(mpv, timeout=15):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def runtime_dir():
+    """Where the setup-screen PNGs go: systemd's RuntimeDirectory, or a temp dir on dev machines."""
+    for d in ("/run/pi-player", os.path.join(tempfile.gettempdir(), "pi-player")):
         try:
-            d = mpv.duration()
-            if d:
-                return float(d)
-        except MpvError:
-            pass  # property unavailable until the file is loaded
-        time.sleep(0.1)
-    raise MpvError("video duration unavailable (file not playable?)")
+            os.makedirs(d, exist_ok=True)
+            return d
+        except OSError:
+            pass
 
 
-def play_synced(mpv, cfg, content=None, keep_playing=lambda: True, tick=lambda: None):
-    """Load the video and keep it on the group clock. tick() runs every round (identifying).
-
-    Returns "switch" when a new version is due, "leave" when keep_playing() turns false."""
-    th = cfg["sync"]
+def play_synced(display, cfg, content=None, keep_playing=lambda: True):
+    """Play the video locked to the group clock until a new version is due ("switch") or
+    keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch."""
     video = cfg["video"]
-    mpv.loadfile(video)
-    mpv.set_speed(1.0)
-    duration = wait_for_duration(mpv)
-    epoch = float(cfg["epoch"])
     man = content.current_manifest() if content and video == content.current else None
-    if man:  # manifest is authoritative for the group clock
-        epoch, duration = float(man.get("epoch") or 0), float(man["duration"])
-    log.info("playing %s (version %s, duration %.3f s, epoch %s)",
-             video, man and man["version"], duration, epoch)
-    speed = 1.0
-    last_log = 0.0
+    epoch = float(man.get("epoch") or 0) if man else float(cfg["epoch"])  # manifest is authoritative
+    duration = display.play(video, epoch)
+    if man and abs(float(man["duration"]) - duration) > 0.05:
+        log.warning("manifest duration %.3f s != file duration %.3f s; looping on the file's",
+                    float(man["duration"]), duration)
+    log.info("playing %s (version %s, duration %.3f s, epoch %s)", video, man and man["version"], duration, epoch)
     heartbeat.STATUS["state"] = "PLAYING"
+    th, last_log = cfg["sync"], 0.0
     while True:
-        if not mpv.alive():
-            raise MpvError("mpv died")
+        if not display.alive():
+            raise DisplayError(display.error)
         if not keep_playing():
             return "leave"
-        tick()
-        t0 = time.time()
-        pos = mpv.time_pos()
-        now = (t0 + time.time()) / 2  # midpoint of the IPC round trip
-        if pos is not None:
-            d = sync.drift(float(pos), sync.target_position(now, epoch, duration), duration)
-            heartbeat.STATUS["drift_ms"] = d * 1000
-            action = sync.correction(d, th)
-            if action[0] == "seek":
-                target = sync.target_position(time.time(), epoch, duration)
-                log.info("drift %+.1f ms -> seek to %.3f", d * 1000, target)
-                mpv.seek(target)
-                if speed != 1.0:
-                    mpv.set_speed(1.0)
-                    speed = 1.0
-            else:
-                new = action[1] if action[0] == "speed" else 1.0
-                if new != speed:
-                    mpv.set_speed(new)
-                    speed = new
-                if action[0] == "speed" or t0 - last_log >= 10:
-                    log.info("drift %+.1f ms speed %.4f", d * 1000, speed)
-                    last_log = t0
-        due = content.due(time.time()) if content else None
+        d = display.drift()
+        heartbeat.STATUS["drift_ms"] = None if d is None else round(d * 1000, 1)
+        if d is not None and abs(d) > th["seek_threshold"]:  # clock stepped, pipeline stalled, ...
+            log.warning("drift %+.1f ms -> re-joining the group clock", d * 1000)
+            display.join()
+        now = time.time()
+        if now - last_log >= 60:
+            log.info("drift %s ms, frames this loop %s", heartbeat.STATUS["drift_ms"], display.stats())
+            last_log = now
+        due = content.due(now) if content else None
         if due is not None and due <= 0:
             return "switch"
-        time.sleep(th["interval"] if due is None else min(th["interval"], due))
+        time.sleep(th["interval"] if due is None else max(0.0, min(th["interval"], due)))
 
 
 def switch(content, cfg):
@@ -100,16 +70,15 @@ def switch(content, cfg):
 
 
 class Agent:
-    """Main loop: evaluate the state each tick, put the matching screen or the video on mpv."""
+    """Main loop: evaluate the state each tick, put the matching screen or the video on HDMI."""
 
-    def __init__(self, cfg, mpv, content, pair, monitor=None, wifi=None):
-        self.cfg, self.mpv, self.content, self.pair = cfg, mpv, content, pair
+    def __init__(self, cfg, display, content, pair, monitor=None, wifi=None):
+        self.cfg, self.display, self.content, self.pair = cfg, display, content, pair
         self.monitor, self.wifi = monitor, wifi
-        self.screen_dir = os.path.dirname(mpv.socket_path)
+        self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.time())
-        self.shown = None  # key of the screen on mpv; None = video or nothing
-        self.identified = 0  # identify_until already put on the OSD
+        self.shown = None  # key of the screen on HDMI; None = video or nothing
 
     def state(self):
         now = time.time()
@@ -140,34 +109,29 @@ class Agent:
                 screens.pairing(path, *key[1:], **common)
             elif st == state.WAITING:
                 screens.waiting(path, key[1], **common)
+            elif st == "IDENTIFY":
+                screens.identify(path, key[1], **common)
             else:
                 screens.wifi_setup(path, *key[1:], **common, portal_url="http://" + netman.HOTSPOT_IP)
-            self.mpv.loadfile(path)
-            log.info("showing %s screen %s", st, path)
-        except MpvError:
-            raise
         except Exception as e:  # e.g. Pillow/qrcode missing on a dev box: at least blank the video
             log.error("rendering %s screen failed: %s", st, e)
-            self.mpv.command("stop")
+            self.display.close()
+        else:
+            self.display.show_image(path)
+            log.info("showing %s screen %s", st, path)
         self.shown = key
 
-    def identify(self):
-        """"Scherm identificeren": the screen name on the OSD until identify_until, once per value
-        (mpv keeps it up for the duration, also over a loadfile)."""
-        until = self.content.identify_until() if self.content else 0
-        if until == self.identified:
-            return
-        self.identified = until
-        osd = content_mod.identify_osd(self.content.screen_name(), until, time.time())
-        if osd:
-            self.mpv.show_text(*osd)
-            log.info("identifying as %r for %.0f s", osd[0], osd[1] / 1000)
+    def identifying(self):
+        """"Scherm identificeren": (name, ms left) while the CMS asks this screen to show its name."""
+        if not self.content:
+            return None
+        return content_mod.identify_osd(self.content.screen_name(), self.content.identify_until(), time.time())
 
     def loop(self):
         last = None
         while True:
-            if not self.mpv.alive():
-                raise MpvError("mpv died")
+            if not self.display.alive():
+                raise DisplayError(self.display.error)
             st = self.state()
             if st != last:
                 log.info("state %s -> %s", last, st)
@@ -181,29 +145,34 @@ class Agent:
             if due is not None and due <= 0:
                 switch(self.content, self.cfg)
                 continue
+            ident = self.identifying()
+            if ident:
+                # ponytail: full-screen name card instead of an overlay; a text overlay on the
+                # video would cost the zero-copy hardware decode. Video re-joins the clock after.
+                self.show(("IDENTIFY", ident[0], self.content.identify_until()))
+                time.sleep(1)
+                continue
             if st == state.PLAYING:
                 self.shown = None
-                if play_synced(self.mpv, self.cfg, self.content,
-                               lambda: self.state() == state.PLAYING, self.identify) == "switch":
+                if play_synced(self.display, self.cfg, self.content,
+                               lambda: self.state() == state.PLAYING and not self.identifying()) == "switch":
                     switch(self.content, self.cfg)
                 continue
             self.show(self.screen_key(st))
-            self.identify()
             time.sleep(1)
 
 
 def run(cfg):
-    mpv = Mpv(socket_path(cfg["mpv_socket"]), cfg["mpv_bin"], cfg["mpv_extra_args"])
+    display = Display(cfg["video_sink"])
 
     def stop(*_):
-        mpv.stop()
+        display.close()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        mpv.start()
-        log.info("pi-player %s, mpv up", __version__)
+        log.info("pi-player %s, display via %s", __version__, cfg["video_sink"])
         content = pair = monitor = wifi = None
         try:
             content = content_mod.Content(cfg)
@@ -219,11 +188,11 @@ def run(cfg):
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()
             else:
                 log.warning("nmcli not found: no wifi setup hotspot (dev machine?)")
-        Agent(cfg, mpv, content, pair, monitor, wifi).loop()
-    except MpvError as e:
-        # Let systemd restart the whole agent (fresh mpv, fresh state) — simplest recovery.
-        log.error("%s; exiting for restart", e)
-        mpv.stop()
+        Agent(cfg, display, content, pair, monitor, wifi).loop()
+    except DisplayError as e:
+        # Let systemd restart the whole agent (fresh pipeline, fresh state) — simplest recovery.
+        log.error("display: %s; exiting for restart", e)
+        display.close()
         sys.exit(1)
 
 

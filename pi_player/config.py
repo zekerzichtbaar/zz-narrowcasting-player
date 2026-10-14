@@ -14,10 +14,9 @@ DEFAULTS = {
     "wifi_retry": 120,
     "logo": "/etc/pi-player/logo.png",
     "ntp_server": "",
-    "mpv_bin": "mpv",
-    "mpv_socket": "/run/pi-player/mpv.sock",
-    "mpv_extra_args": [],
-    "sync": {"interval": 1.0, "deadband": 0.020, "seek_threshold": 0.5, "gain": 0.5, "max_nudge": 0.02},
+    "display_mode": "1920x1080@60",
+    "video_sink": "kmssink",
+    "sync": {"interval": 1.0, "seek_threshold": 0.5},
 }
 
 
