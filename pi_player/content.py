@@ -1,0 +1,371 @@
+"""Content updates: manifest fetch, verified download, atomic swap, activation timing.
+
+Files in state_dir: current.mp4 (on screen), next.mp4 (verified, waiting), next.mp4.part (downloading),
+state.json ({"current": manifest|null, "pending": manifest|null, "screen": {id,name,group_id}|null}).
+Self-check: python3 -m pi_player.content
+"""
+import hashlib
+import json
+import logging
+import math
+import os
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+log = logging.getLogger("pi-player")
+
+
+class Unauthorized(Exception):
+    """CMS answered 401: token revoked."""
+
+
+# ---------- pure helpers ----------
+
+def switch_time(manifest, ready_at, have_current=True):
+    """When to put a verified download on screen.
+
+    At activate_at if ready by then; if ready later, at the next loop boundary of the new video
+    (epoch + k*duration) so it starts at frame 0 on every screen. Nothing on screen -> right away.
+    """
+    if not have_current:
+        return ready_at
+    at = float(manifest.get("activate_at") or 0)
+    if ready_at <= at:
+        return at
+    epoch, dur = float(manifest.get("epoch") or 0), float(manifest["duration"])
+    return epoch + math.ceil((ready_at - epoch) / dur) * dur
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _same_host(a, b):
+    pa, pb = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
+    return (pa.scheme, pa.netloc) == (pb.scheme, pb.netloc)
+
+
+# ---------- I/O ----------
+
+def fetch_manifest(cms_url, token, timeout=15):
+    """Return the manifest dict, None for 204 (no content). Raises Unauthorized on 401."""
+    req = urllib.request.Request(cms_url.rstrip("/") + "/api/devices/manifest",
+                                 headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if r.status == 204:
+                return None
+            m = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise Unauthorized() from e
+        raise
+    m["url"] = urllib.parse.urljoin(cms_url.rstrip("/") + "/", m["url"])
+    return m
+
+
+def download(manifest, dest, token=None, cms_url="", timeout=30, on_fail=None):
+    """Download to dest.part, verify sha256, os.replace to dest. Returns True on success.
+
+    On any failure the .part is removed and dest (and current.mp4) are left untouched, and
+    on_fail(version, reason) is called (WS download_failed).
+    """
+    part = dest + ".part"
+    headers = {}
+    if token and cms_url and _same_host(manifest["url"], cms_url):
+        headers["Authorization"] = f"Bearer {token}"
+    h = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(manifest["url"], headers=headers),
+                                    timeout=timeout) as r, open(part, "wb") as f:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                h.update(chunk)
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        if h.hexdigest() != manifest["sha256"].lower():
+            raise ValueError("sha256 mismatch")
+        os.replace(part, dest)
+        return True
+    except Exception as e:  # network, disk, mismatch: all mean "keep the old video"
+        log.warning("download of %s failed: %s", manifest.get("version"), e)
+        if on_fail:
+            on_fail(manifest.get("version"), str(e))
+        try:
+            os.unlink(part)
+        except FileNotFoundError:
+            pass
+        return False
+
+
+def reset(state_dir):
+    """`pi-player reset`: forget pairing and content -> first-boot flow. Returns removed paths."""
+    gone = []
+    for name in ("token", "token.tmp", "state.json", "current.mp4", "next.mp4", "next.mp4.part"):
+        p = os.path.join(state_dir, name)
+        try:
+            os.unlink(p)
+            gone.append(p)
+        except FileNotFoundError:
+            pass
+    return gone
+
+
+def load_state(state_dir):
+    try:
+        with open(os.path.join(state_dir, "state.json")) as f:
+            return {"current": None, "pending": None, "screen": None, **json.load(f)}
+    except (OSError, ValueError):
+        return {"current": None, "pending": None, "screen": None}
+
+
+def save_state(state_dir, st):
+    path = os.path.join(state_dir, "state.json")
+    with open(path + ".tmp", "w") as f:
+        json.dump(st, f, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+# ---------- runtime ----------
+
+class Content:
+    """Owns state.json and the video files. A background thread fetches + downloads; the play loop
+    calls due() and activate() from its own thread."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.dir = cfg["state_dir"]
+        self.current = os.path.join(self.dir, "current.mp4")
+        self.next = os.path.join(self.dir, "next.mp4")
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        os.makedirs(self.dir, exist_ok=True)
+        self.state = load_state(self.dir)
+        self.switch_at = None  # set once next.mp4 is verified and waiting
+        self.on_download_failed = None  # callback(version, reason), set by the WS link
+        p = self.state["pending"]
+        if p and os.path.exists(self.next):  # survived a restart: verified earlier
+            self.switch_at = switch_time(p, time.time(), self.has_current())
+        elif p:
+            self.state["pending"] = None
+
+    def token(self):
+        try:
+            with open(os.path.join(self.dir, "token")) as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
+    def forget_token(self):
+        """Unpaired/revoked: delete the token so fetching (and the WS link) stops."""
+        try:
+            os.unlink(os.path.join(self.dir, "token"))
+        except FileNotFoundError:
+            pass
+
+    def set_screen(self, screen):
+        """Screen name/group from the pairing claim, a manifest or a WS screen_updated."""
+        with self.lock:
+            if screen != self.state.get("screen"):
+                self.state["screen"] = screen
+                save_state(self.dir, self.state)
+
+    def screen_name(self):
+        with self.lock:
+            return (self.state.get("screen") or {}).get("name")
+
+    def clear(self):
+        """Manifest 204: nothing published for this screen (any more) -> drop all video."""
+        with self.lock:
+            if not (self.state["current"] or self.state["pending"] or self.has_current()):
+                return
+            log.info("manifest: no content published; removing local video")
+            for p in (self.current, self.next):
+                try:
+                    os.unlink(p)
+                except FileNotFoundError:
+                    pass
+            self.state["current"], self.state["pending"], self.switch_at = None, None, None
+            save_state(self.dir, self.state)
+
+    def has_current(self):
+        return os.path.exists(self.current)
+
+    def current_manifest(self):
+        with self.lock:
+            return self.state["current"]
+
+    def pending_version(self):
+        with self.lock:
+            p = self.state["pending"]
+            return p and p["version"]
+
+    def due(self, now):
+        """Seconds until the pending switch (<= 0 means switch now), or None if nothing pending."""
+        with self.lock:
+            return None if self.switch_at is None else self.switch_at - now
+
+    def activate(self):
+        """next.mp4 -> current.mp4 (atomic). Returns the now-current manifest (None if a clear() won)."""
+        with self.lock:
+            if self.switch_at is None or not os.path.exists(self.next):
+                self.switch_at = None
+                return None
+            os.replace(self.next, self.current)
+            self.state["current"], self.state["pending"] = self.state["pending"], None
+            self.switch_at = None
+            save_state(self.dir, self.state)
+            return self.state["current"]
+
+    def check(self):
+        """One manifest fetch + download if needed. Called from the background thread."""
+        token = self.token()
+        if not token:
+            return
+        m = fetch_manifest(self.cfg["cms_url"], token)
+        if m is None:
+            self.clear()
+            return
+        if m.get("screen"):
+            self.set_screen(m["screen"])
+        with self.lock:
+            cur, pend = self.state["current"], self.state["pending"]
+        if cur and cur["version"] == m["version"] and self.has_current():
+            if pend:  # CMS rolled back to what we're already showing: drop the pending one
+                with self.lock:
+                    self.state["pending"], self.switch_at = None, None
+                    save_state(self.dir, self.state)
+            return
+        if pend and pend["version"] == m["version"]:
+            if pend.get("activate_at") != m.get("activate_at"):  # CMS moved the activation
+                with self.lock:
+                    self.state["pending"] = m
+                    self.switch_at = switch_time(m, time.time(), self.has_current())
+                    save_state(self.dir, self.state)
+            return
+        log.info("new version %s, downloading %s", m["version"], m["url"])
+        with self.lock:  # a newer version supersedes a waiting one
+            self.switch_at = None
+            self.state["pending"] = None
+        if not download(m, self.next, token, self.cfg["cms_url"], on_fail=self.on_download_failed):
+            return
+        now = time.time()
+        with self.lock:
+            self.state["pending"] = m
+            self.switch_at = switch_time(m, now, self.has_current())
+            save_state(self.dir, self.state)
+        log.info("version %s verified, switching at %.3f (in %.1f s)",
+                 m["version"], self.switch_at, self.switch_at - now)
+
+    def start(self):
+        threading.Thread(target=self._loop, name="content", daemon=True).start()
+
+    def poke(self):
+        """Fetch the manifest now (e.g. on a WS update_available)."""
+        self.wake.set()
+
+    def _loop(self):
+        while True:
+            try:
+                self.check()
+            except Unauthorized:
+                log.warning("manifest: 401, token revoked; deleting token")
+                self.forget_token()
+            except Exception as e:
+                log.warning("manifest fetch failed: %s", e)
+            self.wake.wait(float(self.cfg["manifest_poll"]))
+            self.wake.clear()
+
+
+# ---------- self-check ----------
+
+def _selfcheck():
+    import http.server
+    import shutil
+    import tempfile
+
+    # activation timing
+    m = {"activate_at": 1000.0, "epoch": 0, "duration": 60.0}
+    assert switch_time(m, 900.0) == 1000.0               # ready early -> exactly activate_at
+    assert switch_time(m, 1000.0) == 1000.0
+    assert switch_time(m, 1000.5) == 1020.0              # late -> next loop boundary (17*60)
+    assert switch_time(m, 1020.0) == 1020.0              # late, exactly on a boundary
+    assert switch_time({**m, "epoch": 5}, 1001.0) == 1025.0
+    assert switch_time(m, 900.0, have_current=False) == 900.0  # nothing on screen -> now
+    # late switches land on a boundary for every screen, whenever each one finished
+    assert switch_time(m, 1003.0) == switch_time(m, 1019.9)
+
+    tmp = tempfile.mkdtemp(prefix="pi-player-content-")
+    try:
+        good, bad = b"good video bytes" * 1000, b"tampered"
+        open(os.path.join(tmp, "a.mp4"), "wb").write(good)
+        open(os.path.join(tmp, "b.mp4"), "wb").write(bad)
+
+        class H(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **k):
+                super().__init__(*a, directory=tmp, **k)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_port}/"
+        sha_good = hashlib.sha256(good).hexdigest()
+        cur, nxt = os.path.join(tmp, "current.mp4"), os.path.join(tmp, "next.mp4")
+        open(cur, "wb").write(b"old video")
+
+        # sha mismatch rejected: no next.mp4, no .part, current untouched
+        fails = []
+        assert not download({"url": base + "b.mp4", "sha256": sha_good, "version": "v2"}, nxt,
+                            on_fail=lambda v, why: fails.append((v, why)))
+        assert fails == [("v2", "sha256 mismatch")]
+        assert not os.path.exists(nxt) and not os.path.exists(nxt + ".part")
+        assert open(cur, "rb").read() == b"old video"
+        # failed download (404 / dead host) keeps the old file
+        assert not download({"url": base + "missing.mp4", "sha256": sha_good, "version": "v2"}, nxt)
+        assert not download({"url": "http://127.0.0.1:1/x.mp4", "sha256": sha_good, "version": "v2"}, nxt)
+        assert not os.path.exists(nxt) and open(cur, "rb").read() == b"old video"
+        # good download lands in next.mp4 only after verification
+        assert download({"url": base + "a.mp4", "sha256": sha_good.upper(), "version": "v2"}, nxt)
+        assert open(nxt, "rb").read() == good and not os.path.exists(nxt + ".part")
+        assert open(cur, "rb").read() == b"old video"
+
+        # atomic swap via Content.activate + state.json round trip
+        c = Content({"state_dir": tmp, "cms_url": base, "manifest_poll": 300})
+        man = {"version": "v2", "duration": 60.0, "epoch": 0, "activate_at": 0}
+        c.state["pending"], c.switch_at = man, 0.0
+        assert c.due(10.0) <= 0
+        assert c.activate() == man
+        assert open(cur, "rb").read() == good and not os.path.exists(nxt)
+        assert load_state(tmp) == {"current": man, "pending": None, "screen": None}
+        assert c.activate() is None  # nothing pending: no-op
+        c.set_screen({"id": "s", "name": "Kantine"})
+        assert c.screen_name() == "Kantine" and load_state(tmp)["screen"]["name"] == "Kantine"
+        c.clear()
+        assert not c.has_current() and load_state(tmp)["current"] is None and c.screen_name() == "Kantine"
+        open(cur, "wb").write(good)
+        assert c.due(10.0) is None
+        open(os.path.join(tmp, "token"), "w").write("t\n")
+        assert c.token() == "t"
+        c.forget_token()
+        c.forget_token()  # idempotent
+        assert c.token() is None
+        open(os.path.join(tmp, "token"), "w").write("t\n")
+        assert os.path.join(tmp, "token") in reset(tmp)
+        assert not any(os.path.exists(os.path.join(tmp, n)) for n in ("token", "state.json", "current.mp4"))
+        srv.shutdown()
+    finally:
+        shutil.rmtree(tmp)
+    print("content self-check OK")
+
+
+if __name__ == "__main__":
+    _selfcheck()

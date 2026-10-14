@@ -1,0 +1,39 @@
+# /etc/pi-player/config.toml — pi-player configuration. Restart after editing:
+#   sudo systemctl restart pi-player
+
+# CMS base URL. Device token lives in <state_dir>/token (written by pairing).
+cms_url = "http://localhost:8080"
+# Fallback manifest poll (seconds); the WebSocket update signal makes this mostly redundant.
+manifest_poll = 300
+# Network lost while playing: keep playing this long (seconds), then show the wifi-setup screen.
+offline_timeout = 600
+# While the wifi-setup hotspot is up: every this many seconds drop it briefly and try the saved
+# wifi networks again (postponed while someone is using the setup page).
+wifi_retry = 120
+# Time source for chrony (sync between screens depends on it). Empty = the distro's internet
+# pool. Set a LAN host (e.g. "192.168.1.10") so all screens share one clock; applied by
+# install.sh as /etc/chrony/conf.d/pi-player.conf -> re-run `sudo ./install.sh` after changing.
+ntp_server = ""
+# Optional logo (PNG) shown top-left on the setup screens.
+logo = "/etc/pi-player/logo.png"
+
+# Where the agent keeps token, videos and state.
+state_dir = "/var/lib/pi-player"
+# Video to play. Defaults to <state_dir>/current.mp4 when empty.
+video = ""
+
+# Sync reference: frame 0 plays at epoch + k*duration (Unix seconds). The manifest overrides this.
+epoch = 0
+
+# mpv
+mpv_bin = "mpv"
+mpv_socket = "/run/pi-player/mpv.sock"
+mpv_extra_args = []
+
+# Drift correction (seconds). Real hardware needs tuning.
+[sync]
+interval = 1.0        # how often to measure drift
+deadband = 0.020      # |drift| below this: do nothing
+seek_threshold = 0.5  # |drift| above this: hard seek
+gain = 0.5            # speed = 1 - gain*drift
+max_nudge = 0.02      # speed limited to 0.98..1.02

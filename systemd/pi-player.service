@@ -1,0 +1,31 @@
+[Unit]
+Description=Pi Player narrowcasting agent
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target systemd-user-sessions.service
+# The agent owns the HDMI console; keep the login prompt off tty1.
+Conflicts=getty@tty1.service
+# Never give up restarting (crash loops would otherwise stop after 5 starts in 10 s).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Blank tty1 and hide its text cursor before mpv takes over the screen ("-" = best effort).
+ExecStartPre=-/bin/sh -c 'TERM=linux setterm --cursor off --clear all > /dev/tty1'
+ExecStart=/usr/bin/python3 -m pi_player
+WorkingDirectory=/opt/pi-player
+Environment=PYTHONPATH=/opt/pi-player
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=pi-player
+StateDirectory=pi-player
+StateDirectoryMode=0700
+Restart=always
+# mpv crash -> agent exits 1; agent crash/kill -> back up in ~2 s (DoD: < 10 s).
+RestartSec=2
+StandardInput=tty-force
+TTYPath=/dev/tty1
+TTYVTDisallocate=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

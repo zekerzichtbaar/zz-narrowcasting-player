@@ -1,0 +1,277 @@
+# pi-player
+
+Narrowcasting screen client for the Raspberry Pi 4. It plays the single MP4 our CMS exports,
+looped forever, fullscreen on HDMI with no sound. Every screen in a group stays frame-accurate
+in sync with the others. When the CMS publishes a new version, all screens download it and
+switch at the same moment. First-time setup (wifi and pairing) is done on the screen itself.
+
+- Protocol between Pi and CMS: [`docs/protocol.md`](docs/protocol.md)
+- Mock CMS for local testing: `mock_cms.py`
+- Sync test video: `scripts/make_test_video.sh`
+
+## Contents
+
+1. [Install over SSH](#1-install-over-ssh)
+2. [First-time setup on the screen](#2-first-time-setup-on-the-screen)
+3. [Reset](#3-reset)
+4. [Configuration reference](#4-configuration-reference)
+5. [Time sync (NTP)](#5-time-sync-ntp)
+6. [CMS export spec](#6-cms-export-spec)
+7. [Local testing: mock CMS and test video](#7-local-testing-mock-cms-and-test-video)
+8. [Hardware test plan](#8-hardware-test-plan)
+9. [Troubleshooting](#9-troubleshooting)
+
+## 1. Install over SSH
+
+You need a Raspberry Pi 4 running **Raspberry Pi OS Lite 64-bit (Bookworm)** with SSH enabled
+and a network connection for the install itself. Ethernet is easiest. The wifi can be set up
+later on the screen.
+
+```sh
+# from your machine
+scp -r zz-narrowcasting-screen pi@<pi-host>:   # or: ssh in and git clone the repo
+ssh pi@<pi-host>
+cd zz-narrowcasting-screen
+sudo ./install.sh                     # wifi country defaults to NL
+sudo WIFI_COUNTRY=BE ./install.sh     # ...or set it explicitly
+sudo reboot                           # once, so the kernel console text disappears
+```
+
+`install.sh` does the following:
+
+- Installs the apt packages: `mpv chrony python3 python3-websockets python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base`. It uses no pip and no venv.
+- Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
+- Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
+- Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
+- Adds the captive-portal DNS drop-in for the setup hotspot (`/etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf`).
+- Sets the wifi country if none is set, and runs `rfkill unblock wifi`.
+- Writes the chrony drop-in from `ntp_server` (see [section 5](#5-time-sync-ntp)).
+- Adds any missing kernel cmdline tokens to `/boot/firmware/cmdline.txt` for a clean console: `consoleblank=0 vt.global_cursor_default=0 quiet loglevel=3 logo.nologo`. Tokens that are already there are never duplicated. If you already set one of these keys yourself (e.g. `loglevel=7`), your value is left alone. A one-time backup is saved as `cmdline.txt.pi-player.bak`. You need to **reboot** before the change takes effect.
+- Installs and enables `pi-player.service`, then restarts it.
+
+**Upgrading:** re-run `sudo ./install.sh` from a newer checkout. The script is idempotent: it
+keeps your config, token, videos and pairing.
+
+The service starts on boot and takes over tty1 (the login prompt on HDMI is disabled). It runs
+with `Restart=always`, `RestartSec=2` and `StartLimitIntervalSec=0`. If mpv dies, the agent
+exits, and if the agent dies or is killed, systemd starts it again within about 2 seconds. It
+never gives up, and on restart it shows whatever state is correct at that moment.
+
+## 2. First-time setup on the screen
+
+At any moment the screen shows exactly one of these four states:
+
+| State | When | Screen |
+|---|---|---|
+| `WIFI_SETUP` | no network | hotspot SSID, password, QR to join |
+| `PAIRING` | network, not paired | pairing code + QR to the CMS pairing page |
+| `WAITING` | paired, nothing published | "Waiting for content" + screen name |
+| `PLAYING` | paired + video | the synced MP4 |
+
+Walkthrough on a fresh Pi with no ethernet:
+
+1. **Wifi setup.** About 30 s after boot, the screen shows *Set up wifi* with the hotspot
+   name `Narrowcast-XXXX`, a password and a QR code. The last 4 characters of the name come
+   from the device ID. The password is new on every agent start: being in front of the screen
+   is the authorization.
+2. On a phone, scan the QR code, or join the hotspot by hand. The phone's captive-portal sheet
+   or notification should open the setup page. If it doesn't, browse to **http://10.42.0.1**.
+3. Pick your network (or type a hidden SSID), enter its password and tap connect. The
+   hotspot goes down while the Pi tries to join. If that fails, the hotspot comes back and
+   both the screen and the page show the error (e.g. *Wrong password?*). Rejoin and try again.
+   *Rescan* drops the hotspot briefly to refresh the network list, because the Pi 4 can't
+   scan and run a hotspot at the same time.
+4. **Pairing.** Once the Pi is online, the screen shows a short code (`K7Q-4M2`) and a QR
+   code that opens the CMS pairing page with the code filled in. Enter the code in the CMS
+   and choose a name and group for the screen. Codes expire after about 10 minutes and are
+   replaced on the screen automatically.
+5. **Waiting / playing.** No reboot is needed. The screen moves to *Waiting for content*, or
+   starts playing straight away if its group already has a published video.
+
+If ethernet is connected, the Pi skips wifi setup. Wifi setup also comes back on its own:
+
+- **Network lost while playing:** the screen keeps playing for `offline_timeout` (10 min).
+  After that it shows the wifi-setup screen.
+- **Network lost while pairing or waiting:** the wifi-setup screen appears after 30 s.
+- **While the hotspot is up:** every `wifi_retry` (2 min) the Pi drops the hotspot briefly
+  and retries its saved networks. When a network (or ethernet) is back, it returns to normal.
+
+**Unpairing in the CMS** (or a revoked token) sends the screen back to the pairing code.
+
+## 3. Reset
+
+```sh
+sudo pi-player reset
+```
+
+This deletes the device token, `state.json`, the videos and every NetworkManager connection
+pi-player created (`pi-player-*`), then restarts the service. The Pi goes back to the
+first-boot flow. A wifi connection set up by Raspberry Pi Imager (`preconfigured`) is left
+alone. Remove it yourself if you want the setup hotspot:
+`sudo nmcli connection delete preconfigured`.
+
+## 4. Configuration reference
+
+The file is `/etc/pi-player/config.toml`. Restart the service after editing:
+`sudo systemctl restart pi-player`. The exception is `ntp_server`, which needs a re-run of
+`install.sh`. Keys you leave out fall back to these defaults (`pi_player/config.py`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `cms_url` | `"http://localhost:8080"` | CMS base URL. The device token lives in `<state_dir>/token` (0600, written by pairing). |
+| `manifest_poll` | `300` | Fallback manifest poll interval in seconds. The WebSocket update signal makes this mostly redundant. |
+| `offline_timeout` | `600` | Network lost while playing: keep playing this many seconds, then show wifi setup. |
+| `wifi_retry` | `120` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
+| `ntp_server` | `""` | chrony time source. Empty = the distro's internet pool. See [section 5](#5-time-sync-ntp). |
+| `logo` | `"/etc/pi-player/logo.png"` | Optional PNG shown top-left on the setup screens (max 360x140). If the file is missing, no logo is shown. |
+| `state_dir` | `"/var/lib/pi-player"` | Token, `current.mp4`, `next.mp4`, `state.json`. |
+| `video` | `""` | Video to play. Empty = `<state_dir>/current.mp4`. |
+| `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
+| `mpv_bin` | `"mpv"` | mpv binary. |
+| `mpv_socket` | `"/run/pi-player/mpv.sock"` | mpv JSON IPC socket. |
+| `mpv_extra_args` | `[]` | Extra mpv arguments, e.g. `["--drm-mode=1920x1080@50"]`. |
+| `[sync] interval` | `1.0` | How often to measure drift (s). |
+| `[sync] deadband` | `0.020` | If \|drift\| is below this, do nothing (s). |
+| `[sync] seek_threshold` | `0.5` | If \|drift\| is above this, hard seek (s). |
+| `[sync] gain` | `0.5` | Proportional gain: `speed = 1 - gain*drift`. |
+| `[sync] max_nudge` | `0.02` | Speed is limited to `1 ± max_nudge` (0.98–1.02). |
+
+The CLI is `pi-player [run|reset] [--config PATH] [--video PATH] [--epoch N]`.
+
+## 5. Time sync (NTP)
+
+There is no master screen. Each Pi computes `position = (now - epoch) mod duration` and
+gently corrects mpv toward it. Sync between screens is therefore only as good as the
+agreement between their clocks. chrony keeps the clocks aligned.
+
+- `ntp_server = ""` (the default) uses Debian's internet pool. That is usually fine to a few
+  ms, but screens behind the same router can still differ by a few ms.
+- For the tightest alignment, point all screens at **one LAN time source**: set
+  `ntp_server = "192.168.1.10"` (any host or IP) and re-run `sudo ./install.sh`. This writes
+  `/etc/chrony/conf.d/pi-player.conf` containing `server 192.168.1.10 iburst prefer` and
+  restarts chrony. Setting the key back to `""` and re-running removes the file.
+- **Making a LAN box the time source** (one Pi, or any Linux box that is always on): install
+  chrony on it and add `/etc/chrony/conf.d/lan-server.conf`:
+  ```
+  allow 192.168.0.0/16     # your LAN
+  local stratum 10         # keep serving time even if its own internet sync is down
+  ```
+  Then run `sudo systemctl restart chrony`. That box can be one of the player Pis. Its own
+  `ntp_server` stays empty.
+- Check with `chronyc tracking` (look at *System time* offset) and `chronyc sources -v`
+  (the `*` marks the source in use).
+
+## 6. CMS export spec
+
+The CMS must render exactly **one** MP4 per group (full spec in
+[`docs/protocol.md` §3.2](docs/protocol.md)):
+
+- MP4 container, **H.264** (High profile, level ≤ 4.2), **1920x1080**, yuv420p
+- **Constant frame rate, 25 or 30 fps**
+- **Keyframe at frame 0** (and preferably every 1–2 s so seeks are cheap)
+- Audio is not needed. It is ignored (the Pi is always muted).
+
+The rest of the CMS contract is in [`docs/protocol.md`](docs/protocol.md). It covers the
+register/pairing endpoints, the manifest JSON (`version`, `url`, `sha256`, `size`,
+`duration`, `epoch`, `activate_at`) and the WebSocket messages in both directions
+(`update_available`, `screen_updated`, `unpaired`, `hello`, `heartbeat`, `download_failed`).
+
+## 7. Local testing: mock CMS and test video
+
+```sh
+# a 60 s 1080p25 test video with a big frame counter, timecode and a sweeping bar
+scripts/make_test_video.sh media/test.mp4 25 60
+
+# mock CMS (stdlib only) serving MP4s from ./media
+python3 mock_cms.py --port 8080 --media media
+```
+
+On the Pi, set `cms_url = "http://<your-machine>:8080"` in `/etc/pi-player/config.toml` and
+restart the service. Then:
+
+- **Pair:** open `http://<your-machine>:8080/pair` (or scan the QR code on the screen), enter the code, name and group.
+- **Publish:** `curl -X POST 'http://localhost:8080/admin/publish?file=test.mp4&delay=60'`. All screens switch 60 s from now. The mock logs every WebSocket message, including the heartbeats (`state`, `version`, `drift_ms`).
+- **Failed download:** add `&bad_sha=1`. The Pi rejects the file, keeps playing the old one, and sends `download_failed`.
+- **Unpublish:** `curl -X POST http://localhost:8080/admin/unpublish` (the screen goes to WAITING).
+- **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING).
+
+Without a Pi, you can run the agent on a laptop (mpv opens a window):
+`python3 -m pi_player --config my-dev-config.toml`, with `state_dir` and `mpv_socket`
+pointing at writable paths. To play just a file with sync and no CMS (dev machine where `/var/lib/pi-player` isn't
+writable, so content/pairing are off): `python3 -m pi_player --video media/test.mp4`.
+
+Self-checks (pure logic, no hardware needed):
+
+```sh
+for m in sync content ws state pairing netman portal; do python3 -m pi_player.$m || echo "FAIL $m"; done
+python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNGs to look at
+python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
+```
+
+## 8. Hardware test plan
+
+**Wifi setup** (phone needed; test iPhone and Android):
+
+1. Run `sudo ./install.sh` on a Pi with ethernet. Unplug the ethernet and make sure there is
+   no saved wifi (`sudo pi-player reset`).
+2. Within about 30 s the screen shows *Set up wifi* with `Narrowcast-XXXX`, a password and a
+   QR code.
+3. Scan the QR code with an iPhone and with an Android phone. The captive sheet or
+   notification should open the page. If it doesn't, browse to http://10.42.0.1.
+4. Pick the network and enter a wrong password first. Within about 1 min (after rejoining),
+   the screen and the page should both show *Wrong password?*.
+5. Enter the correct password. The screen should show the pairing code.
+6. Turn that wifi AP off. The setup screen should come back after 30 s (or 10 min if
+   playing). Turn the AP back on: the Pi should rejoin within `wifi_retry` (2 min).
+7. Plug in ethernet while the setup screen is showing. It should leave setup within about 5 s.
+
+In `journalctl -u pi-player -f`, look for `hotspot ... up`, `portal on` and `wifi: connected`.
+
+**Pairing and playback:** pair via the code (expect WAITING or PLAYING with no reboot). Reboot
+and check that the video plays fullscreen, muted and looping, with no console text or cursor.
+Run `sudo pkill mpv` and `sudo systemctl kill pi-player`: playback should be back within
+10 s. Unpair in the mock and check that the pairing code comes back.
+
+**Sync** (2–3 Pis side by side, same group):
+
+1. Put the test video (`scripts/make_test_video.sh`) on the mock and publish it. All screens
+   should switch at the same moment.
+2. Let them settle (about 1 min). With `journalctl -u pi-player -f`, drift lines should stay
+   near 0 ms.
+3. Film all screens together with a phone. Use a high shutter speed, or a 120/240 fps slow-mo
+   video. Step through the frames: the big frame counters should match, or differ by at most
+   1 (≤ 40 ms at 25 fps). Repeat after 1 hour.
+4. Publish a new version: all screens should switch together.
+5. Unplug the network for less than 10 min: playback continues, and after reconnecting the
+   heartbeat resumes and any pending update is applied. Unplug for more than 10 min: the
+   wifi-setup screen appears. Restore the network: playback resumes.
+
+## 9. Troubleshooting
+
+- **Logs:** `journalctl -u pi-player -f` (agent, mpv, wifi, pairing, drift), `systemctl status pi-player`.
+- **Black screen / nothing on HDMI:** check `journalctl -u pi-player` for mpv errors. Make
+  sure the HDMI cable was connected at boot, and confirm nothing else holds DRM (no desktop
+  installed).
+- **Console text or cursor still visible:** reboot once after the install (the cmdline change
+  only takes effect at boot). Check `cat /proc/cmdline` for `vt.global_cursor_default=0 quiet loglevel=3`.
+- **No hotspot / wifi missing:** wifi is rfkill-blocked until a country is set. Run
+  `sudo raspi-config nonint get_wifi_country` and `rfkill list`. Fix it with
+  `sudo WIFI_COUNTRY=XX ./install.sh`, or `sudo raspi-config nonint do_wifi_country XX && sudo rfkill unblock wifi`.
+- **Captive page doesn't open on the phone:** browse to **http://10.42.0.1** by hand. Some
+  phones only show a notification, and some stay on mobile data. Turn mobile data off.
+- **Joined wifi but stuck at "Connecting to the CMS…":** the wifi has no route to the CMS.
+  Check `cms_url` and the network. `sudo pi-player reset` (or plugging in ethernet) gets you
+  back to setup.
+- **Screens drift apart:** check the clocks first (`chronyc tracking` on each Pi, offsets
+  should be ≪ 10 ms). Use a LAN time source ([section 5](#5-time-sync-ntp)). Then tune `[sync]`:
+  - Constant small offset: raise `gain`.
+  - Speed oscillates: lower `gain` or widen `deadband`.
+  - Frequent seeks: raise `seek_threshold`.
+- **Judder / uneven motion:** the HDMI refresh rate doesn't match the video fps. 25 fps
+  plays best at 50 Hz and 30 fps at 60 Hz. Forcing the mode (e.g.
+  `mpv_extra_args = ["--drm-mode=1920x1080@50"]`, or `hdmi_mode` in `/boot/firmware/config.txt`)
+  is still an open question to settle during hardware testing.
+- **Update not switching:** run `journalctl -u pi-player | grep -i -e manifest -e download -e activated`.
+  A sha256 mismatch is rejected (the old video keeps playing) and the CMS gets `download_failed`.
+  A Pi that finishes downloading after `activate_at` switches at the next loop boundary.
+- **Start over:** `sudo pi-player reset`.
