@@ -27,6 +27,15 @@ You need a Raspberry Pi 4 running **Raspberry Pi OS Lite 64-bit (Bookworm)** wit
 and a network connection for the install itself. Ethernet is easiest. The wifi can be set up
 later on the screen.
 
+One line, on the Pi (downloads the code from GitHub):
+
+```sh
+wget -qO- https://raw.githubusercontent.com/zekerzichtbaar/zz-narrowcasting-player/master/install.sh | sudo bash
+sudo reboot                           # once, so the kernel console text disappears
+```
+
+Upgrade = run the same line again. Or from a local checkout:
+
 ```sh
 # from your machine
 scp -r zz-narrowcasting-screen pi@<pi-host>:   # or: ssh in and git clone the repo

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Install or upgrade pi-player on Raspberry Pi OS Lite (Bookworm). Idempotent: re-run = upgrade.
 #   sudo ./install.sh
+#   wget -qO- https://raw.githubusercontent.com/zekerzichtbaar/zz-narrowcasting-player/master/install.sh | sudo bash
 set -euo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
+TARBALL="${PI_PLAYER_TARBALL:-https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/heads/master.tar.gz}"
 APP=/opt/pi-player
 ETC=/etc/pi-player
 STATE=/var/lib/pi-player
@@ -55,8 +57,16 @@ apply_cmdline() {
 [[ "${PI_PLAYER_INSTALL_LIB:-}" == 1 ]] && return 0 2>/dev/null
 
 if [[ $EUID -ne 0 ]]; then
-  echo "run as root: sudo $0" >&2
+  echo "run as root (sudo)" >&2
   exit 1
+fi
+
+# Piped from wget (no checkout next to the script): fetch the repo source first.
+if [[ ! -d "$SRC/pi_player" ]]; then
+  echo "==> downloading $TARBALL"
+  SRC="$(mktemp -d)"
+  trap 'rm -rf "$SRC"' EXIT
+  wget -qO- "$TARBALL" | tar xz -C "$SRC" --strip-components=1
 fi
 
 echo "==> packages"
