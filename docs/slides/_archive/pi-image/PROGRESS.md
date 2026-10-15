@@ -72,3 +72,11 @@ Verification: `rhysd/actionlint:1.7.7` (incl. shellcheck on run blocks) → exit
 Placeholder choices: README section numbered "0" (to keep existing anchors), release notes text,
 prerelease title format, 120 min job timeout, binfmt fallback image tag.
 Runtime-unverified: workflow never run on GitHub; README rendering not previewed.
+
+## Post-acceptance fix (2026-10-15, v0.4.1)
+v0.4.0 booted to a login prompt: `userconfig.service` consumed `userconf.txt` at first boot and its
+`cancel-rename` ran `systemctl --no-block start getty@tty1`, which cancelled pi-player's queued start job
+(`Conflicts=getty@tty1`). `image/build.sh` now runs `/usr/lib/userconf-pi/userconf USER HASH` inside the
+chroot (sets password, disables `userconfig`) instead of writing `userconf.txt`; self-checks adjusted.
+Verified on the Pi: after reboot pi-player `active`, `getty@tty1` `inactive`. Note: Pi OS's `firstboot`
+strips `quiet` from `cmdline.txt` when no `splash` is present; cosmetic, left as is.

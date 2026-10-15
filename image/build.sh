@@ -119,6 +119,14 @@ log "baking cms_url = $CMS_URL"
 sed -i "s|^cms_url = .*|cms_url = \"$CMS_URL\"|" "$MNT/etc/pi-player/config.toml"
 grep -qx "cms_url = \"$CMS_URL\"" "$MNT/etc/pi-player/config.toml" || die "cms_url not set"
 
+# Apply the user now instead of via userconf.txt: at first boot userconfig.service would run
+# cancel-rename, which does `systemctl start getty@tty1`, and that cancels pi-player's queued
+# start job (Conflicts=getty@tty1) -> login prompt instead of the player. Pi OS's own script
+# renames uid 1000, sets the password, disables userconfig; systemctl start is a no-op in a chroot.
+log "user '$IMAGE_USER' (applied in the chroot, not at first boot)"
+chroot "$MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 \
+  /usr/lib/userconf-pi/userconf "$IMAGE_USER" "$(openssl passwd -6 -stdin <<<"$IMAGE_PASSWORD")"
+
 log "cleaning up the chroot"
 chroot "$MNT" apt-get clean
 rm -rf "$MNT/var/lib/apt/lists/"* "$MNT$SRC_IN"
@@ -133,8 +141,7 @@ fi
 [[ -L "$MNT/var/lib/dbus/machine-id" ]] || rm -f "$MNT/var/lib/dbus/machine-id"
 rm -f "$MNT"/etc/ssh/ssh_host_*
 
-log "headless user '$IMAGE_USER' + ssh (boot partition)"
-printf '%s:%s\n' "$IMAGE_USER" "$(openssl passwd -6 -stdin <<<"$IMAGE_PASSWORD")" > "$MNT/boot/firmware/userconf.txt"
+log "ssh (boot partition)"
 : > "$MNT/boot/firmware/ssh"
 
 unmount_all
@@ -171,7 +178,9 @@ preload_restored() {
   else [[ "$(sha256sum < "$MNT/etc/ld.so.preload")" == "$PRELOAD_SUM" ]]; fi
 }
 no_host_keys() { ! compgen -G "$MNT/etc/ssh/ssh_host_*" >/dev/null; }
-userconf_ok() { grep -Eq "^$IMAGE_USER:\\\$6\\\$[^:]+$" "$MNT/boot/firmware/userconf.txt"; }
+user_ok() {
+  grep -q "^$IMAGE_USER:x:1000:" "$MNT/etc/passwd" && grep -Eq "^$IMAGE_USER:\\\$6\\\$[^:]+:" "$MNT/etc/shadow"
+}
 
 CMDLINE="$(head -n1 "$MNT/boot/firmware/cmdline.txt")"
 CMDLINE_TOKENS=()
@@ -183,7 +192,9 @@ for p in python3 python3-gi python3-pil python3-qrcode gir1.2-gstreamer-1.0 gstr
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl chrony dnsmasq-base; do
   check "package $p" pkg_installed "$p"
 done
-check "userconf.txt ($IMAGE_USER, sha512)" userconf_ok
+check "user $IMAGE_USER (uid 1000, sha512 password)" user_ok
+check "userconfig.service disabled" test ! -e "$MNT/etc/systemd/system/multi-user.target.wants/userconfig.service"
+check "no userconf.txt" test ! -e "$MNT/boot/firmware/userconf.txt"
 check "ssh on boot partition" test -e "$MNT/boot/firmware/ssh"
 check "rfkill wlan state files 0" rfkill_wlan_zero
 check "NetworkManager WirelessEnabled=true" grep -qx 'WirelessEnabled=true' "$MNT/var/lib/NetworkManager/NetworkManager.state"
