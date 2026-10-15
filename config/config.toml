@@ -33,6 +33,11 @@ display_mode = "1920x1080@60"
 # GStreamer video sink (plus properties). Pi: "kmssink"; e.g. "kmssink connector-id=32" when
 # more than one HDMI output is connected. Dev machine: "autovideosink".
 video_sink = "kmssink"
+# Screens hung upright (CMS "Stand van het scherm" 90/270): how the picture is turned.
+# "gl" = on the GPU (frames into GL, glvideoflip, shown by gl_sink via GBM/KMS); falls back to
+# "cpu" (videoflip) by itself when GL is missing or fails to start. Landscape screens never turn.
+rotate_method = "gl"
+gl_sink = "glimagesink"
 
 # Frame timing is locked to the system clock by GStreamer; this is only a safety net.
 [sync]

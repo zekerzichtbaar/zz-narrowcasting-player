@@ -13,8 +13,8 @@ import sys
 import tempfile
 import time
 
-from . import __version__, config, content as content_mod, heartbeat, netman, pairing, screens, state
-from .gst import Display, DisplayError
+from . import __version__, bell, config, content as content_mod, heartbeat, netman, pairing, screens, state
+from .gst import Display, DisplayError, to_rotation
 
 log = logging.getLogger("pi-player")
 
@@ -29,17 +29,18 @@ def runtime_dir():
             pass
 
 
-def play_synced(display, cfg, content=None, keep_playing=lambda: True):
+def play_synced(display, cfg, content=None, keep_playing=lambda: True, rotation=0):
     """Play the video locked to the group clock until a new version is due ("switch") or
     keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch."""
     video = cfg["video"]
     man = content.current_manifest() if content and video == content.current else None
     epoch = float(man.get("epoch") or 0) if man else float(cfg["epoch"])  # manifest is authoritative
-    duration = display.play(video, epoch)
+    duration = display.play(video, epoch, rotation)
     if man and abs(float(man["duration"]) - duration) > 0.05:
         log.warning("manifest duration %.3f s != file duration %.3f s; looping on the file's",
                     float(man["duration"]), duration)
-    log.info("playing %s (version %s, duration %.3f s, epoch %s)", video, man and man["version"], duration, epoch)
+    log.info("playing %s (version %s, duration %.3f s, epoch %s, rotation %s)", video, man and man["version"],
+             duration, epoch, rotation)
     heartbeat.STATUS["state"] = "PLAYING"
     th, last_log = cfg["sync"], 0.0
     while True:
@@ -78,7 +79,11 @@ class Agent:
         self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.time())
-        self.shown = None  # key of the screen on HDMI; None = video or nothing
+        self.shown = None  # (key, rotation) of the screen on HDMI; None = video or nothing
+
+    def rotation(self):
+        """How the panel hangs: from the manifest (kept in state.json), else the config (dev)."""
+        return self.content.rotation() if self.content else to_rotation(self.cfg.get("rotation"))
 
     def state(self):
         now = time.time()
@@ -100,10 +105,11 @@ class Agent:
         return (st,)
 
     def show(self, key):
-        if key == self.shown:
+        rot = self.rotation()
+        if (key, rot) == self.shown:
             return
         st, path = key[0], os.path.join(self.screen_dir, key[0].lower() + ".png")
-        common = {"footer": self.footer, "logo": self.cfg.get("logo")}
+        common = {"footer": self.footer, "logo": self.cfg.get("logo"), "rotation": rot}
         try:
             if st == state.PAIRING:
                 screens.pairing(path, *key[1:], **common)
@@ -118,8 +124,8 @@ class Agent:
             self.display.close()
         else:
             self.display.show_image(path)
-            log.info("showing %s screen %s", st, path)
-        self.shown = key
+            log.info("showing %s screen %s (rotation %s)", st, path, rot)
+        self.shown = (key, rot)
 
     def identifying(self):
         """"Scherm identificeren": (name, ms left) while the CMS asks this screen to show its name."""
@@ -154,8 +160,10 @@ class Agent:
                 continue
             if st == state.PLAYING:
                 self.shown = None
+                rot = self.rotation()  # a new rotation leaves the loop and restarts turned, no download
                 if play_synced(self.display, self.cfg, self.content,
-                               lambda: self.state() == state.PLAYING and not self.identifying()) == "switch":
+                               lambda: self.state() == state.PLAYING and not self.identifying()
+                               and self.rotation() == rot, rot) == "switch":
                     switch(self.content, self.cfg)
                 continue
             self.show(self.screen_key(st))
@@ -163,7 +171,7 @@ class Agent:
 
 
 def run(cfg):
-    display = Display(cfg["video_sink"])
+    display = Display(cfg["video_sink"], cfg["gl_sink"], cfg["rotate_method"])
 
     def stop(*_):
         display.close()
@@ -183,6 +191,7 @@ def run(cfg):
             pair = pairing.Pairing(cfg, content)
             pair.start()
             heartbeat.Heartbeat(cfg, content).start()
+            bell.Bell(cfg, content).start()  # poll/identify -> manifest now, not at the next poll
             monitor = netman.Monitor(cfg["cms_url"]).start()
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()
@@ -215,6 +224,8 @@ def main():
     p.add_argument("--config", help="config file (default /etc/pi-player/config.toml)")
     p.add_argument("--video", help="override video path")
     p.add_argument("--epoch", type=float, help="override sync epoch")
+    p.add_argument("--rotation", type=int, choices=[0, 90, 270],
+                   help="panel hung this many degrees clockwise (only without content updates; the CMS decides otherwise)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load(a.config)
@@ -224,6 +235,8 @@ def main():
         cfg["video"] = a.video
     if a.epoch is not None:
         cfg["epoch"] = a.epoch
+    if a.rotation is not None:
+        cfg["rotation"] = a.rotation
     run(cfg)
 
 

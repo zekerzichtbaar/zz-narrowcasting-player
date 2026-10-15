@@ -6,6 +6,7 @@ epoch + p (see sync.py). It loops with non-flushing segment seeks: no gap, no st
 re-sync at the loop boundary.
 """
 import logging
+import os
 import re
 import threading
 import time
@@ -21,6 +22,34 @@ HW_DECODE = "h264parse ! capssetter caps=video/x-h264,colorimetry=bt709 ! v4l2h2
 SW_DECODE = "h264parse ! avdec_h264 ! videoconvert"  # dev machines / no v4l2 decoder
 QUEUE = "queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0"
 
+# Rotation (CMS `screens.rotation`) = how the panel hangs, turned clockwise. The picture turns back
+# the other way (same as the Chromium player's CSS rotate(-rotation)): 90 -> 90 degrees counter-clockwise.
+# The Pi 4 display (vc4 HVS) can only flip planes, not turn them 90 degrees, so KMS plane rotation
+# is out. First choice is the GPU: decoded frames go into GL (dmabuf import), glvideoflip turns them
+# and glimagesink shows them via GBM/KMS. If GL is missing or does not preroll: videoflip on the CPU
+# (a 1080p25 transpose, roughly a third of one core; only rotated screens pay it).
+FLIP = {90: "90l", 270: "90r"}
+
+
+def to_rotation(value):
+    """0, 90 or 270 from whatever the CMS (or config) sent; anything else is 0."""
+    try:
+        r = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return r if r in FLIP else 0
+
+
+def rotate_fragment(rotation, gl):
+    """Pipeline piece between the decoded frames and the sink that turns the picture upright
+    on a panel hung at `rotation`; "" when nothing needs turning."""
+    d = FLIP.get(to_rotation(rotation))
+    if not d:
+        return ""
+    if gl:
+        return f"glupload ! glcolorconvert ! glvideoflip video-direction={d}"
+    return f"videoflip video-direction={d}"
+
 
 class DisplayError(Exception):
     pass
@@ -29,6 +58,10 @@ class DisplayError(Exception):
 def _gst():
     global Gst
     if Gst is None:
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            # console Pi: GL straight on the display (GBM/KMS), for glimagesink on rotated screens
+            for k, v in (("GST_GL_WINDOW", "gbm"), ("GST_GL_PLATFORM", "egl"), ("GST_GL_API", "gles2")):
+                os.environ.setdefault(k, v)
         import gi
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst as G
@@ -38,9 +71,12 @@ def _gst():
 
 
 class Display:
-    def __init__(self, sink="kmssink"):
+    def __init__(self, sink="kmssink", gl_sink="glimagesink", rotate_method="gl"):
         G = _gst()
-        self.sink = sink
+        self.sink, self.gl_sink = sink, gl_sink
+        # GPU rotation unless configured off or the GL elements are not installed
+        self.gl = rotate_method == "gl" and all(G.ElementFactory.find(e) for e in
+                                                ("glupload", "glvideoflip", gl_sink.split()[0]))
         self.clock = G.SystemClock.obtain()
         self.clock.set_property("clock-type", G.ClockType.REALTIME)  # clock time == time.time_ns()
         self.pipe = None
@@ -58,9 +94,9 @@ class Display:
         if p:
             p.set_state(Gst.State.NULL)
 
-    def _new(self, desc, location):
+    def _new(self, desc, location, sink=None):
         self.close()
-        p = Gst.parse_launch(f"filesrc name=src ! {desc} ! {self.sink} name=vsink")
+        p = Gst.parse_launch(f"filesrc name=src ! {desc} ! {sink or self.sink} name=vsink")
         p.get_by_name("src").set_property("location", location)
         p.use_clock(self.clock)
         self.pipe = p
@@ -98,12 +134,24 @@ class Display:
         """Put a PNG on screen; the prerolled frame stays up while PAUSED."""
         self._state(self._new("pngdec ! videoconvert", path), Gst.State.PAUSED)
 
-    def play(self, video, epoch):
-        """Start the looping video on the group clock. Returns its duration (s)."""
+    def play(self, video, epoch, rotation=0):
+        """Start the looping video on the group clock, turned for a panel hung at `rotation`.
+        Returns its duration (s)."""
         dec = HW_DECODE if Gst.ElementFactory.find("v4l2h264dec") else SW_DECODE
-        p = self._new(f"qtdemux name=d d.video_0 ! {dec} ! {QUEUE}", video)
+        gl = self.gl and to_rotation(rotation) != 0
+        turn = rotate_fragment(rotation, gl)
+        p = self._new(f"qtdemux name=d d.video_0 ! {dec} ! {QUEUE}" + (f" ! {turn}" if turn else ""), video,
+                      self.gl_sink if gl else None)
         p.set_start_time(Gst.CLOCK_TIME_NONE)  # we own the base time
-        self._state(p, Gst.State.PAUSED)
+        try:
+            self._state(p, Gst.State.PAUSED)
+        except DisplayError as e:
+            if not gl:
+                raise
+            log.warning("GPU rotation failed (%s); turning on the CPU from now on", e)
+            self.close()
+            self.error, self.gl = None, False
+            return self.play(video, epoch, rotation)
         ok, dur = p.query_duration(Gst.Format.TIME)
         if not ok or dur <= 0:
             raise DisplayError(f"no duration for {video}")
@@ -163,5 +211,54 @@ class Display:
 
     def stats(self):
         """kmssink 'rendered=…, dropped=…' (str parsing: Gst 1.26 GI can't read structure fields)."""
-        s = self.pipe.get_by_name("vsink").get_property("stats") if self.pipe else None
+        try:
+            s = self.pipe.get_by_name("vsink").get_property("stats") if self.pipe else None
+        except TypeError:  # a sink bin (glimagesink) without the property
+            s = None
         return dict(re.findall(r"(rendered|dropped)=\(guint64\)(\d+)", s.to_string())) if s else {}
+
+
+def _selfcheck():
+    assert [to_rotation(v) for v in (0, 90, 270, "90", 180, -90, None, "x", 90.0)] == [0, 90, 270, 90, 0, 0, 0, 0, 90]
+    assert rotate_fragment(0, True) == rotate_fragment(0, False) == rotate_fragment(180, True) == ""
+    # hung clockwise -> picture counter-clockwise (90l), like Chromium's rotate(-90deg)
+    assert rotate_fragment(90, True) == "glupload ! glcolorconvert ! glvideoflip video-direction=90l"
+    assert rotate_fragment(270, True) == "glupload ! glcolorconvert ! glvideoflip video-direction=90r"
+    assert rotate_fragment(90, False) == "videoflip video-direction=90l"
+    assert rotate_fragment("270", False) == "videoflip video-direction=90r"
+    try:
+        G = _gst()
+    except (ImportError, ValueError):
+        print("gst self-check OK (fragments only: no GStreamer here)")
+        return
+    # every fragment parses with the elements this machine has (videotestsrc instead of the file)
+    for rot in (0, 90, 270):
+        for gl in (False, True):
+            frag = rotate_fragment(rot, gl)
+            need = [e.split()[0] for e in frag.split(" ! ")] if frag else []
+            if not all(G.ElementFactory.find(e) for e in need):
+                print(f"  skip rotation {rot} gl={gl}: missing {[e for e in need if not G.ElementFactory.find(e)]}")
+                continue
+            p = G.parse_launch("videotestsrc num-buffers=1 ! video/x-raw,width=192,height=108"
+                               + (f" ! {frag}" if frag else "") + " ! fakesink name=vsink")
+            assert p.get_by_name("vsink") is not None
+            if not gl:  # CPU flip: check the frame really turned (192x108 -> 108x192)
+                caps = {}
+                pad = p.get_by_name("vsink").get_static_pad("sink")
+
+                def keep(pd, _info):
+                    caps.setdefault("c", pd.get_current_caps())
+                    return G.PadProbeReturn.OK
+                pad.add_probe(G.PadProbeType.BUFFER, keep)
+                p.set_state(G.State.PLAYING)
+                p.get_bus().timed_pop_filtered(5 * G.SECOND, G.MessageType.EOS | G.MessageType.ERROR)
+                p.set_state(G.State.NULL)
+                st = caps["c"].get_structure(0)
+                size = (st.get_value("width"), st.get_value("height"))
+                assert size == ((192, 108) if rot == 0 else (108, 192)), (rot, size)
+            print(f"  rotation {rot} gl={gl}: ok")
+    print("gst self-check OK")
+
+
+if __name__ == "__main__":
+    _selfcheck()

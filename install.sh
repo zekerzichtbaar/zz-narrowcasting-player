@@ -96,7 +96,7 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends chrony python3 \
   python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base \
   python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad gstreamer1.0-libav
+  gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
 
 echo "==> files"
 install -d -m 0755 "$APP"

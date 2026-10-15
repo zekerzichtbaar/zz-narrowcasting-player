@@ -1,6 +1,7 @@
 # Pi Player <-> CMS protocol
 
-Version: 2. Plain HTTPS only (polling, no WebSocket). All bodies are JSON (UTF-8).
+Version: 3. Manifest and heartbeat over plain HTTPS (polling); a WebSocket "bel" (section 6)
+only signals "fetch the manifest now". All bodies are JSON (UTF-8).
 Times are Unix seconds (float allowed). Authenticated calls send `Authorization: Bearer <device_token>`.
 
 `<CMS>` below is the `cms_url` from `/etc/pi-player/config.toml`, e.g. `https://cms.example.com`.
@@ -102,9 +103,9 @@ call (manifest, heartbeat) then returns `401`. The Pi deletes its token and goes
 
 ### 3.1 `GET <CMS>/api/devices/manifest`
 
-Authenticated. Polled every `manifest_poll` seconds (default 30), and right after pairing. This
-poll is the only update signal: a new version, a new group moment or an unpublish reaches the Pi
-within one poll.
+Authenticated. Polled every `manifest_poll` seconds (default 30), right after pairing, and right
+after every bel (section 6). Without the bel a new version, a new group moment or an unpublish
+reaches the Pi within one poll; with it within about a second.
 
 Response `200`:
 ```json
@@ -117,20 +118,22 @@ Response `200`:
   "epoch": 0,
   "activate_at": 1760437500,
   "identify_until": 0,
+  "orientation": "landscape",
+  "rotation": 0,
   "screen": { "id": "scr_42", "name": "Kantine links", "group_id": "grp_7" }
 }
 ```
 
-Response `204`: paired but no content (yet): no playlist, nothing published, or no version of the
-playlist ever got a video. Pi shows `WAITING`; a video it had (e.g. from before an unpair/re-pair,
-or after the CMS unpublished) is deleted. A newly published version whose video is still being
-made (or failed) is **not** a `204`: the CMS keeps serving the previous video, with the same
-`version` as before, so the Pi does not even switch. Once the new video is ready, `version` changes.
+Response `200` with `"version": null` (or `204` from an older CMS): paired but no content (yet):
+no playlist, nothing published, or no version of the playlist ever got a video. Pi shows `WAITING`;
+a video it had (e.g. from before an unpair/re-pair, or after the CMS unpublished) is deleted. The
+body still carries `rotation` (an idle portrait screen turns its own screens), `identify_until`
+(show the name while the screen is identified, `0` = not) and `screen`:
+`{"version": null, "identify_until": 0, "rotation": 90, "screen": {...}}`.
+A newly published version whose video is still being made (or failed) is **not** this: the CMS
+keeps serving the previous video, with the same `version` as before, so the Pi does not even
+switch. Once the new video is ready, `version` changes.
 Response `401`: token revoked (Pi goes to `PAIRING`).
-
-Response `200` with `"version": null`: nothing to play (handled exactly like a `204`), but the
-screen is being identified, so the body carries `identify_until` and `screen`:
-`{"version": null, "identify_until": 1760437560, "screen": {...}}`.
 
 Fields:
 | field | type | meaning |
@@ -143,6 +146,8 @@ Fields:
 | `epoch` | float | Sync reference: frame 0 plays at `epoch + k * duration`. Same for all screens in a group. Default `0`. |
 | `activate_at` | float | Unix time from which this version may be shown. All screens in a group get the same value. `0` = right away (at the next loop boundary when something already plays). |
 | `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big, full screen, instead of the video or setup screen until this Unix time (the video re-joins the group clock afterwards). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
+| `orientation` | string | `landscape` (1920x1080) or `portrait` (1080x1920): the format of this video. Informational; the Pi plays whatever size the file has (fitted, black bars). |
+| `rotation` | int | How the panel physically hangs: `0`, `90` or `270` degrees turned **clockwise** (CMS "Stand van het scherm"). The Pi turns the picture back the other way (90 -> 90 degrees counter-clockwise), the video and the setup/identify screens alike. Also in the `version: null` body. **Not** part of `version`: a new rotation never downloads; the Pi restarts the loop turned (re-joining the group clock) and keeps the value in `state.json` for restarts without network. Missing (older CMS) = keep the last one. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = (now - epoch) mod duration`.
@@ -164,7 +169,8 @@ when nothing plays). The group moment then arrives as a new `version` with the s
 
 ### 3.2 MP4 export requirements (CMS side)
 
-- Container MP4, video H.264 (High profile, level <= 4.2), 1920x1080, yuv420p.
+- Container MP4, video H.264 (High profile, level <= 4.2), 1920x1080 (landscape) or 1080x1920
+  (portrait playlist), yuv420p.
 - **Constant frame rate**, 25 or 30 fps.
 - Keyframe at frame 0 (and preferably every 1-2 s so seeks are cheap).
 - No audio needed (the Pi is muted); an audio track is ignored.
@@ -215,3 +221,52 @@ The CMS uses it as "online" (last seen) and as the stored version for group acti
 | manifest `204` | `WAITING` |
 | network errors | keep current state/video; retry with backoff; offline > `offline_timeout` while playing -> `WIFI_SETUP` |
 | sha256 mismatch / download error | discard temp file, keep old video, retry on next manifest fetch |
+
+## 6. Bel (WebSocket signal)
+
+Optional. The CMS rings the screen when something changed (publish, a new group moment, a ready
+video, unpair, "Scherm identificeren"), so the Pi does not wait for the next 30 s poll. It is only a
+signal: on every bel the Pi fetches the manifest (3.1) over HTTP, which stays the single source of
+truth. Without a bel (no Reverb on the CMS, Reverb down, a firewall) everything works on the poll.
+The Zeker Zichtbaar CMS uses Laravel Reverb, which speaks the Pusher protocol (version 7).
+
+### 6.1 `GET <CMS>/api/devices/bell`
+
+Authenticated. Response `200`:
+```json
+{ "key": "6d49c0853cbe8018f48c", "host": null, "port": 443, "scheme": "https", "channel": "private-screen.42" }
+```
+`host` null = the host of `cms_url`; `scheme` `https` = `wss`, anything else `ws`. Never a secret.
+Response `204`: the CMS has no bel (ask again after 5 min). `401`: token revoked (the manifest
+poll handles that).
+
+### 6.2 Connecting and subscribing
+
+```
+Pi                                                 Reverb                  CMS
+ |-- WebSocket ws(s)://host:port/app/{key}?protocol=7&client=pi-player&version=..&flash=false ->|
+ |<- {"event":"pusher:connection_established","data":"{\"socket_id\":\"123.456\",\"activity_timeout\":30}"}
+ |-- POST <CMS>/api/broadcasting/auth  {socket_id, channel_name}  (bearer device token) ------>|
+ |<- 200 {"auth": "key:hmac"}   (403: not this token's channel, unknown token) ----------------|
+ |-- {"event":"pusher:subscribe","data":{"channel":"private-screen.42","auth":"key:hmac"}} ->|
+ |<- {"event":"pusher_internal:subscription_succeeded","channel":"private-screen.42"} ------|
+```
+
+- A token may only subscribe to its own channel (the one from 6.1).
+- Keepalive: when nothing arrived for `activity_timeout` seconds the Pi sends `pusher:ping`; no
+  frame within 10 s after that = dead connection. The Pi answers a server `pusher:ping` with
+  `pusher:pong` (and WebSocket ping frames with pong frames).
+- Reconnect after a close, an error, a failed auth or a missing pong: 1, 2, 4 ... 60 s with
+  +-25 % jitter, back to 1 s once subscribed. `pusher:error` 4000-4099 waits the longest delay.
+- After every re-subscribe the Pi fetches the manifest once (a bel may have been missed).
+- A new token (paired again) closes the connection and starts over with 6.1.
+
+### 6.3 Events on the channel
+
+| event | data | Pi behaviour |
+|---|---|---|
+| `poll` | `[]` | fetch the manifest now |
+| `identify` | `{"identify_until": "2026-10-14T09:31:00.000Z"}` | fetch the manifest now (it carries `identify_until`) |
+
+Bels coalesce: a bel while a manifest fetch (or download) runs gives one more fetch after it,
+never two fetches at once.

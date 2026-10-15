@@ -1,5 +1,10 @@
 """Setup screens rendered as 1920x1080 PNGs (Pillow + qrcode), shown on HDMI by gst.Display.
 
+On a panel hung at 90/270 (CMS `screens.rotation`, clockwise) the screen is laid out upright as
+1080x1920 and the PNG is turned back counter-clockwise, so kmssink still gets 1920x1080. Centred
+screens (identify, waiting, connecting, no network) are drawn natively in portrait; the two-column
+ones (pairing code + QR, wifi setup) are drawn landscape and scaled into the portrait frame.
+
 Preview: python3 -m pi_player.screens OUT_DIR
 """
 import os
@@ -47,9 +52,9 @@ def _qr(img, data, x, y, size):
     return size
 
 
-def _canvas(logo):
+def _canvas(logo, portrait=False):
     from PIL import Image
-    img = Image.new("RGB", (W, H), BG)
+    img = Image.new("RGB", (H, W) if portrait else (W, H), BG)
     if logo and os.path.exists(logo):
         try:
             with Image.open(logo) as lg:
@@ -61,32 +66,58 @@ def _canvas(logo):
     return img
 
 
-def _text(d, xy, s, size, fill=FG, bold=False, anchor="la"):
-    d.text(xy, s, font=_font(size, bold), fill=fill, anchor=anchor)
+def _text(d, xy, s, size, fill=FG, bold=False, anchor="la", fit=None):
+    """fit: max width in px; the font shrinks until the text fits (long screen names in portrait)."""
+    font = _font(size, bold)
+    while fit and size > 12 and d.textlength(s, font=font) > fit:
+        size = int(size * 0.9)
+        font = _font(size, bold)
+    d.text(xy, s, font=font, fill=fill, anchor=anchor)
 
 
 def _footer(d, footer):
     if footer:
-        _text(d, (W // 2, H - 60), footer, 26, MUTED, anchor="ms")
+        w, h = d.im.size
+        _text(d, (w // 2, h - 60), footer, 26, MUTED, anchor="ms", fit=w - 80)
 
 
-def _save(img, path):
+def portrait(rotation):
+    return rotation in (90, 270)
+
+
+def _turn(img, rotation):
+    """Upright layout -> what the 1920x1080 panel must show when it hangs at `rotation` (clockwise):
+    the picture turns back counter-clockwise, like the Chromium player's CSS rotate(-rotation)."""
+    from PIL import Image
+    if not portrait(rotation):
+        return img
+    if img.width > img.height:  # landscape layout on a portrait panel: scale into the upright frame
+        frame = Image.new("RGB", (H, W), BG)
+        small = img.resize((H, H * H // W), Image.LANCZOS)
+        frame.paste(small, (0, (W - small.height) // 2))
+        img = frame
+    return img.rotate(rotation, expand=True)  # PIL turns counter-clockwise
+
+
+def _save(img, path, rotation=0):
+    img = _turn(img, rotation)
     tmp = path + ".tmp"
     img.save(tmp, "PNG")
     os.replace(tmp, path)
     return path
 
 
-def pairing(path, code=None, pair_url=None, expires_at=None, footer="", logo=None):
+def pairing(path, code=None, pair_url=None, expires_at=None, footer="", logo=None, rotation=0):
     """Big code + QR to pair_url. code None -> 'connecting to CMS' placeholder."""
     from PIL import ImageDraw
-    img = _canvas(logo)
+    img = _canvas(logo, portrait(rotation) and not code)
     d = ImageDraw.Draw(img)
+    w, h = img.size
     if not code:
-        _text(d, (W // 2, H // 2 - 20), "Connecting to the CMS…", 72, bold=True, anchor="mm")
-        _text(d, (W // 2, H // 2 + 70), "A pairing code will appear here.", 40, MUTED, anchor="mm")
+        _text(d, (w // 2, h // 2 - 20), "Connecting to the CMS…", 72, bold=True, anchor="mm", fit=w - 160)
+        _text(d, (w // 2, h // 2 + 70), "A pairing code will appear here.", 40, MUTED, anchor="mm", fit=w - 160)
         _footer(d, footer)
-        return _save(img, path)
+        return _save(img, path, rotation)
     left = 160
     _text(d, (left, 260), "Pair this screen", 80, bold=True)
     _text(d, (left, 380), "Scan the QR code, or enter this code in the CMS:", 40, MUTED)
@@ -98,45 +129,48 @@ def pairing(path, code=None, pair_url=None, expires_at=None, footer="", logo=Non
         _text(d, (left, 800), pair_url, 30, MUTED)
         _qr(img, pair_url, W - 160 - 560, (H - 560) // 2, 560)
     _footer(d, footer)
-    return _save(img, path)
+    return _save(img, path, rotation)
 
 
-def waiting(path, name=None, footer="", logo=None):
+def waiting(path, name=None, footer="", logo=None, rotation=0):
     from PIL import ImageDraw
-    img = _canvas(logo)
+    img = _canvas(logo, portrait(rotation))
     d = ImageDraw.Draw(img)
-    _text(d, (W // 2, H // 2 - 30), "Waiting for content", 96, bold=True, anchor="mm")
-    _text(d, (W // 2, H // 2 + 80), name or "Paired — publish something in the CMS for this screen.",
-          48, ACCENT if name else MUTED, anchor="mm")
+    w, h = img.size
+    _text(d, (w // 2, h // 2 - 30), "Waiting for content", 96, bold=True, anchor="mm", fit=w - 160)
+    _text(d, (w // 2, h // 2 + 80), name or "Paired - publish something in the CMS for this screen.",
+          48, ACCENT if name else MUTED, anchor="mm", fit=w - 160)
     _footer(d, footer)
-    return _save(img, path)
+    return _save(img, path, rotation)
 
 
-def identify(path, name, footer="", logo=None):
+def identify(path, name, footer="", logo=None, rotation=0):
     """"Scherm identificeren": the screen name, huge, so you can see which screen is which."""
     from PIL import ImageDraw
-    img = _canvas(logo)
+    img = _canvas(logo, portrait(rotation))
     d = ImageDraw.Draw(img)
-    _text(d, (W // 2, H // 2), name, 160, ACCENT, bold=True, anchor="mm")
+    w, h = img.size
+    _text(d, (w // 2, h // 2), name, 160, ACCENT, bold=True, anchor="mm", fit=w - 160)
     _footer(d, footer)
-    return _save(img, path)
+    return _save(img, path, rotation)
 
 
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
-               portal_url="http://10.42.0.1"):
+               portal_url="http://10.42.0.1", rotation=0):
     """Hotspot SSID + password + join-QR. ssid None -> no hotspot (no wifi adapter / dev box /
     hotspot briefly down): show status/error, or 'connect ethernet'."""
     from PIL import ImageDraw
     from .netman import wifi_qr
-    img = _canvas(logo)
+    img = _canvas(logo, portrait(rotation) and not ssid)
     d = ImageDraw.Draw(img)
+    w, h = img.size
     if not ssid:
-        _text(d, (W // 2, H // 2 - 30), status or "No network", 96 if not status else 72, bold=True,
-              anchor="mm")
-        _text(d, (W // 2, H // 2 + 80), error or ("The setup network comes back in a moment." if status
-              else "Connect an ethernet cable, or wait for wifi setup."), 44, MUTED, anchor="mm")
+        _text(d, (w // 2, h // 2 - 30), status or "No network", 96 if not status else 72, bold=True,
+              anchor="mm", fit=w - 160)
+        _text(d, (w // 2, h // 2 + 80), error or ("The setup network comes back in a moment." if status
+              else "Connect an ethernet cable, or wait for wifi setup."), 44, MUTED, anchor="mm", fit=w - 160)
         _footer(d, footer)
-        return _save(img, path)
+        return _save(img, path, rotation)
     left = 160
     _text(d, (left, 220), "Set up wifi", 80, bold=True)
     _text(d, (left, 340), "1.  Scan the QR code, or join this wifi network:", 38, MUTED)
@@ -152,11 +186,31 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
         _text(d, (left, 850), status, 40, ACCENT)
     _qr(img, wifi_qr(ssid, password), W - 160 - 480, 260, 480)
     _footer(d, footer)
-    return _save(img, path)
+    return _save(img, path, rotation)
+
+
+def _selfcheck():
+    from PIL import Image
+    red = (255, 0, 0)
+    up = Image.new("RGB", (H, W), BG)  # upright portrait layout with a red band at its top
+    up.paste(red, (0, 0, H, 40))
+    for rot, edge in ((90, (5, H // 2)), (270, (W - 5, H // 2))):
+        out = _turn(up, rot)
+        assert out.size == (W, H), out.size
+        # hung clockwise (90): the top of the content sits on the panel's left edge, which is up
+        assert out.getpixel(edge) == red, (rot, out.getpixel(edge))
+    assert _turn(up, 0) is up
+    wide = Image.new("RGB", (W, H), red)  # landscape layout on a portrait panel: scaled, black bars
+    out = _turn(wide, 90)
+    assert out.size == (W, H) and out.getpixel((W // 2, H // 2)) == red and out.getpixel((10, H // 2)) == BG
+    print("screens self-check OK")
 
 
 if __name__ == "__main__":
     import sys
+    if sys.argv[1:] == ["check"]:
+        _selfcheck()
+        sys.exit()
     out = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
     f = "pi-a1b2c3d4e5f6a7b8 · 0.1.0"
@@ -171,3 +225,8 @@ if __name__ == "__main__":
                      error="Could not connect to Kantine: Wrong password?", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-busy.png"), status="Connecting to Kantine…", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-none.png"), footer=f))
+    for r in (90, 270):  # as sent to a panel hung at r: turn your head (or the image) to read it
+        print(pairing(os.path.join(out, f"pairing-{r}.png"), "K7Q-4M2", url, time.time() + 600, f, rotation=r))
+        print(waiting(os.path.join(out, f"waiting-{r}.png"), "Kantine links bij de bar", f, rotation=r))
+        print(identify(os.path.join(out, f"identify-{r}.png"), "Kantine links bij de bar", f, rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-none-{r}.png"), footer=f, rotation=r))

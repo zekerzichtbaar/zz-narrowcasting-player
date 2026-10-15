@@ -1,7 +1,8 @@
 """Content updates: manifest fetch, verified download, atomic swap, activation timing.
 
 Files in state_dir: current.mp4 (on screen), next.mp4 (verified, waiting), next.mp4.part (downloading),
-state.json ({"current": manifest|null, "pending": manifest|null, "screen": {id,name,group_id}|null}).
+state.json ({"current": manifest|null, "pending": manifest|null, "screen": {id,name,group_id}|null,
+"rotation": 0|90|270 once a manifest carried one}).
 Self-check: python3 -m pi_player.content
 """
 import hashlib
@@ -15,6 +16,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .gst import to_rotation
 
 log = logging.getLogger("pi-player")
 
@@ -230,6 +233,20 @@ class Content:
         with self.lock:
             return self.identify
 
+    def rotation(self):
+        """How the panel hangs (0, 90, 270 clockwise), from the last manifest that said; kept in
+        state.json so a restart without network still turns the picture the right way."""
+        with self.lock:
+            return to_rotation(self.state.get("rotation"))
+
+    def set_rotation(self, value):
+        r = to_rotation(value)
+        with self.lock:
+            if r != to_rotation(self.state.get("rotation")):
+                log.info("rotation %s -> %s", self.state.get("rotation", 0), r)
+                self.state["rotation"] = r
+                save_state(self.dir, self.state)
+
     def has_current(self):
         return os.path.exists(self.current)
 
@@ -273,6 +290,8 @@ class Content:
             self.identify = float((m or {}).get("identify_until") or 0)
         if m and m.get("screen"):
             self.set_screen(m["screen"])
+        if m and "rotation" in m:  # outside version too: turning needs no download, also when version null
+            self.set_rotation(m["rotation"])
         if m is None or m.get("version") is None:
             self.clear()
             return
@@ -447,7 +466,21 @@ def _selfcheck():
             assert hits == ["/a.mp4"] and c.pending_version() is None and c.identify_until() == 4102444860
             served["m"] = wait
             c.check()
-            assert c.identify_until() == 0
+            assert c.identify_until() == 0 and c.rotation() == 0
+            # rotation: same version, nothing downloaded, taken over and kept in state.json
+            served["m"] = {**wait, "rotation": 90, "orientation": "portrait"}
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.rotation() == 90
+            assert load_state(tmp)["rotation"] == 90
+            assert Content({"state_dir": tmp, "cms_url": base, "manifest_poll": 30}).rotation() == 90
+            served["m"] = {**wait, "rotation": "bogus"}
+            c.check()
+            assert c.rotation() == 0
+            served["m"] = {**wait, "rotation": 270}
+            c.check()
+            served["m"] = wait  # an older CMS without the field: keep what we had
+            c.check()
+            assert c.rotation() == 270
             # group moment: new version, same file -> no download, switch exactly at activate_at
             t = time.time() + 45
             moment = {**wait, "version": f"7-{int(t)}-abc", "activate_at": t, "epoch": t}
@@ -473,18 +506,48 @@ def _selfcheck():
             c.check()
             assert c.pending_version() is None and c.due(time.time()) is None
             # nothing to play while identifying: like a 204, but the name still shows
-            served["m"] = {"version": None, "identify_until": 4102444860,
+            served["m"] = {"version": None, "identify_until": 4102444860, "rotation": 90,
                            "screen": {"id": 1, "name": "Kantine", "group_id": None}}
             c.check()
+            assert c.rotation() == 90
             assert not c.has_current() and c.current_manifest() is None and c.pending_version() is None
             assert c.identify_until() == 4102444860 and c.screen_name() == "Kantine"
             # 204: everything gone
             served["m"] = None
             c.check()
             assert not c.has_current() and c.current_manifest() is None and c.identify_until() == 0
+            assert c.rotation() == 90  # a 204 has no body: the panel still hangs the same way
         finally:
             fetch_manifest = real_fetch
         srv.shutdown()
+
+        # rotation over the wire, live against mock_cms.py: also with nothing published (version null)
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import mock_cms
+        mock_cms.log = lambda *a: None
+        mock_cms.ring = lambda *a, **k: None  # no bel here (bell.py's self-check covers it)
+        cms = mock_cms.make_server(mock_cms.parse_args(["--bind", "127.0.0.1", "--port", "0", "--media", tmp]))
+        threading.Thread(target=cms.serve_forever, daemon=True).start()
+        cms_url = f"http://127.0.0.1:{cms.server_port}"
+        mock_cms.STATE.update(manifest=None, identify_until=0, rotation=0)
+        assert fetch_manifest(cms_url, "devtoken") is None  # 204
+        open(os.path.join(tmp, "token"), "w").write("devtoken\n")
+        c = Content({"state_dir": tmp, "cms_url": cms_url, "manifest_poll": 30})
+        post = lambda path: urllib.request.urlopen(urllib.request.Request(cms_url + path, method="POST"), timeout=5).read()
+        post("/admin/publish?file=a.mp4&delay=0&duration=60&orientation=portrait")
+        c.check()
+        assert c.rotation() == 0 and c.pending_version()
+        assert c.state["pending"]["orientation"] == "portrait"
+        post("/admin/rotate?rotation=270")
+        c.check()
+        assert c.rotation() == 270
+        post("/admin/unpublish")
+        post("/admin/rotate?rotation=90")
+        post("/admin/identify?seconds=60")
+        c.check()
+        assert c.rotation() == 90 and c.identify_until() > time.time()
+        cms.shutdown()
     finally:
         shutil.rmtree(tmp)
     print("content self-check OK")

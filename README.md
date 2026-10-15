@@ -48,7 +48,7 @@ sudo reboot                           # once, so the kernel console text disappe
 
 `install.sh` does the following:
 
-- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav`). It uses no pip and no venv.
+- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav gstreamer1.0-gl`). It uses no pip and no venv.
 - Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
 - Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
 - Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
@@ -138,10 +138,13 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
 | `display_mode` | `"1920x1080@60"` | HDMI mode, set on the kernel cmdline by `install.sh` (re-run + reboot after changing). Smoothest when the refresh is a multiple of the fps: `@60` for 30 fps, `@50` for 25 fps. Many PC monitors reject `@50` ("Out of range"); TVs accept both. Empty = leave the cmdline alone. |
 | `video_sink` | `"kmssink"` | GStreamer sink, plus properties (e.g. `"kmssink connector-id=32"` with two HDMI outputs). Dev machine: `"autovideosink"`. |
+| `rotate_method` | `"gl"` | Screens hung upright (manifest `rotation` 90/270): `"gl"` turns the video on the GPU (`glupload ! glcolorconvert ! glvideoflip` into `gl_sink`), `"cpu"` with `videoflip`. GL that is missing or fails to start falls back to `"cpu"` by itself. The Pi 4 display itself cannot turn a plane 90 degrees (vc4 only flips), so KMS rotation is not an option. |
+| `gl_sink` | `"glimagesink"` | Sink for GPU-turned video (GBM/KMS on the console; the agent sets `GST_GL_WINDOW=gbm` when there is no X/Wayland). |
+| `rotation` | `0` | Only without content updates (dev, `--video`): how the panel hangs. Otherwise the CMS decides via the manifest. |
 | `[sync] interval` | `1.0` | How often to check the position (s). |
 | `[sync] seek_threshold` | `0.5` | If \|drift\| is above this (clock stepped, pipeline stalled), re-join the group clock (s). |
 
-The CLI is `pi-player [run|reset] [--config PATH] [--video PATH] [--epoch N]`.
+The CLI is `pi-player [run|reset] [--config PATH] [--video PATH] [--epoch N] [--rotation 0|90|270]`.
 
 ## 5. Time sync (NTP)
 
@@ -180,11 +183,14 @@ The CMS must render exactly **one** MP4 per group (full spec in
 
 The rest of the CMS contract is in [`docs/protocol.md`](docs/protocol.md). It covers the
 register/pairing endpoints, the manifest JSON (`version`, `url`, `sha256`, `size`,
-`duration`, `epoch`, `activate_at`) and the heartbeat. Everything is plain HTTPS, no WebSocket:
-the Pi polls the manifest every 30 s (`GET /api/devices/manifest`) and posts a heartbeat every
+`duration`, `epoch`, `activate_at`), the heartbeat and the bel. Manifest and heartbeat are plain
+HTTPS: the Pi polls the manifest every 30 s (`GET /api/devices/manifest`) and posts a heartbeat every
 30 s and on every state/version change (`POST /api/devices/heartbeat` with `state`, `version`,
 `pending_version`, `drift_ms`). A `401` on either means the screen was unpaired. A new
 `version` with the same `sha256` (for example a new group moment) reuses the local file.
+The bel (`pi_player/bell.py`, stdlib WebSocket, Pusher protocol / Laravel Reverb) is only a
+signal: on `poll` or `identify` the Pi fetches the manifest right away instead of at the next
+poll. Without Reverb, or while it is down, the 30 s poll carries on.
 
 ## 7. Local testing: mock CMS and test video
 
@@ -214,7 +220,8 @@ writable, so content/pairing are off): `python3 -m pi_player --video media/test.
 Self-checks (pure logic, no hardware needed):
 
 ```sh
-for m in sync content heartbeat state pairing netman portal; do python3 -m pi_player.$m || echo "FAIL $m"; done
+for m in sync content heartbeat state pairing netman portal bell gst; do python3 -m pi_player.$m || echo "FAIL $m"; done
+python3 -m pi_player.screens check            # setup screens turned for a rotated panel
 python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNGs to look at
 python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
 ```
@@ -256,6 +263,17 @@ Run `sudo systemctl kill pi-player`: playback should be back within
 5. Unplug the network for less than 10 min: playback continues, and after reconnecting the
    heartbeat resumes and any pending update is applied. Unplug for more than 10 min: the
    wifi-setup screen appears. Restore the network: playback resumes.
+
+**Rotated screen** (CMS "Stand van het scherm" 90 or 270; mock: `curl -X POST 'http://localhost:8080/admin/rotate?rotation=90'`):
+
+1. Hang the screen turned clockwise (or set `rotation=90` on the mock with the screen flat) and
+   publish a portrait video (`&orientation=portrait`). Within a few seconds the video restarts
+   upright, without downloading again; the setup, waiting and identify screens are upright too.
+2. `journalctl -u pi-player -f` shows `rotation 0 -> 90` and `playing ... rotation 90`. A line
+   `GPU rotation failed ... turning on the CPU` means GL did not start (check `gstreamer1.0-gl`).
+3. Measure: the once-a-minute `frames this loop` line should show no growing `dropped`, and
+   `top` should leave headroom for the agent. Film it like the sync test: still within 1 frame
+   of a landscape neighbour in the same group. If GL stutters, try `rotate_method = "cpu"`.
 
 ## 9. Troubleshooting
 
