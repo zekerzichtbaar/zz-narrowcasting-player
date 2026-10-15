@@ -11,6 +11,7 @@ switch at the same moment. First-time setup (wifi and pairing) is done on the sc
 
 ## Contents
 
+0. [Flash the image](#0-flash-the-image) (easiest: no SSH, no network needed)
 1. [Install over SSH](#1-install-over-ssh)
 2. [First-time setup on the screen](#2-first-time-setup-on-the-screen)
 3. [Reset](#3-reset)
@@ -20,6 +21,65 @@ switch at the same moment. First-time setup (wifi and pairing) is done on the sc
 7. [Local testing: mock CMS and test video](#7-local-testing-mock-cms-and-test-video)
 8. [Hardware test plan](#8-hardware-test-plan)
 9. [Troubleshooting](#9-troubleshooting)
+
+## 0. Flash the image
+
+The quickest way to a working screen: a ready-to-flash image with Raspberry Pi OS Lite 64-bit
+(Bookworm) and pi-player preinstalled, the CMS URL (`https://narrowcasting.zekerzichtbaar.nl`)
+and wifi country (`NL`) already set. No SSH, no ethernet and no install step needed.
+
+1. **Download** `pi-player-<version>.img.xz` and its `.sha256` from the
+   [Releases page](https://github.com/zekerzichtbaar/zz-narrowcasting-player/releases)
+   (releases `v*` are the normal images; `image-<n>` prereleases are test builds).
+2. **Verify** the download, in the folder with both files:
+
+   ```sh
+   sha256sum -c pi-player-<version>.img.xz.sha256          # Linux
+   shasum -a 256 -c pi-player-<version>.img.xz.sha256      # macOS
+   ```
+
+3. **Flash** it to the SD card (8 GB or more), there is no need to unpack the `.xz` first:
+   - **Raspberry Pi Imager:** *Choose OS* → *Use custom* → pick the `.img.xz`. When Imager asks
+     *"Would you like to apply OS customisation settings?"*, choose **No**. Customisation
+     overwrites the image's user, SSH and wifi settings.
+   - **balenaEtcher:** *Flash from file* → pick the `.img.xz` → select the card → *Flash*.
+4. **First boot:** put the card in a Pi 4, connect HDMI, power on. Pi OS expands the root
+   filesystem to the full card and **reboots once by itself**. After that the screen shows the
+   `WIFI_SETUP` screen. Continue with [section 2](#2-first-time-setup-on-the-screen).
+
+**Default login:** user **`pi`**, password **`pi-player`**. SSH is enabled. The password is the
+same on every card flashed from the image, so change it right after the first login:
+
+```sh
+ssh pi@<pi-host>      # find the IP in your router, or use raspberrypi.local
+passwd                # set a new password
+```
+
+Every card still gets its own machine ID and SSH host keys at first boot, and pairs itself with
+the CMS. Upgrade pi-player later as described in [section 1](#1-install-over-ssh) (re-run the
+install line over SSH). Note that every card boots with the hostname `raspberrypi`; change it with
+`sudo raspi-config nonint do_hostname <name>` if several screens share a LAN.
+
+### Building the image
+
+The image is built by GitHub Actions (`.github/workflows/image.yml`): pushing a tag `v*` builds
+it and attaches it to the Release for that tag. *Run workflow* (`workflow_dispatch`) builds a
+test image as a prerelease `image-<run>` and lets you change the user, password, CMS URL and
+wifi country. These are not secrets: the password hash sits on the boot partition of the image.
+
+To build locally you need Linux and root (on x86 also `qemu-user-static binfmt-support`; macOS
+is not supported):
+
+```sh
+sudo apt-get install curl ca-certificates xz-utils fdisk util-linux mount e2fsprogs zerofree openssl
+sudo image/build.sh
+sudo CMS_URL=https://cms.example IMAGE_USER=pi IMAGE_PASSWORD=secret WIFI_COUNTRY=BE \
+     VERSION=1.2.3 OUT_DIR=/tmp/out image/build.sh
+```
+
+The script downloads the pinned Pi OS base image (checksum-verified, cached in `OUT_DIR`), runs
+`install.sh` in a chroot, checks the result and writes `$OUT_DIR/pi-player-$VERSION.img.xz` plus
+`.sha256` (default `OUT_DIR` is `image/out/`). It takes about 5 to 15 minutes.
 
 ## 1. Install over SSH
 

@@ -1,0 +1,101 @@
+# Build the flashable pi-player image (image/build.sh) and publish it to a GitHub Release.
+#   tag push v*        -> Release for that tag (created if missing, assets replaced)
+#   workflow_dispatch  -> prerelease tagged image-<run_number> on the dispatched commit
+# The user/password are NOT secrets: the hash ends up on the boot partition of every image.
+name: image
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      image_user:
+        description: Login user created at first boot
+        default: pi
+      image_password:
+        description: Login password (change it with passwd after first login)
+        default: pi-player
+      cms_url:
+        description: CMS URL baked into /etc/pi-player/config.toml
+        default: https://narrowcasting.zekerzichtbaar.nl
+      wifi_country:
+        description: Wifi country (ISO 3166 alpha-2)
+        default: NL
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # Empty on tag pushes: image/build.sh then falls back to the same defaults as above.
+      IMAGE_USER: ${{ inputs.image_user }}
+      IMAGE_PASSWORD: ${{ inputs.image_password }}
+      CMS_URL: ${{ inputs.cms_url }}
+      WIFI_COUNTRY: ${{ inputs.wifi_country }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version, release tag, paths
+        run: |
+          echo "OUT_DIR=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+          echo "CACHE_DIR=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            echo "VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-$GITHUB_RUN_NUMBER-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+            echo "RELEASE_TAG=image-$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          fi
+          echo "BASE_SHA256=$(sed -n 's/^BASE_SHA256=//p' image/build.sh)" >> "$GITHUB_ENV"
+
+      - name: Host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl ca-certificates xz-utils fdisk \
+            util-linux mount e2fsprogs zerofree openssl qemu-user-static binfmt-support
+          df -h / "$RUNNER_TEMP"
+
+      - name: Register aarch64 binfmt
+        run: |
+          f=/proc/sys/fs/binfmt_misc/qemu-aarch64
+          [[ -e $f ]] || sudo update-binfmts --enable qemu-aarch64 || true
+          [[ -e $f ]] || sudo systemctl restart systemd-binfmt || true
+          [[ -e $f ]] || docker run --rm --privileged tonistiigi/binfmt:qemu-v8.1.5 --install arm64
+          cat "$f"
+
+      - name: Cache base image
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/base
+          key: raspios-base-${{ env.BASE_SHA256 }}
+
+      - name: Build image
+        run: |
+          mkdir -p "$OUT_DIR" "$CACHE_DIR"
+          sudo --preserve-env=IMAGE_USER,IMAGE_PASSWORD,CMS_URL,WIFI_COUNTRY,OUT_DIR,CACHE_DIR,VERSION \
+            image/build.sh
+          sudo chown -R "$(id -u):$(id -g)" "$OUT_DIR" "$CACHE_DIR"
+          ls -l "$OUT_DIR"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=("$OUT_DIR/pi-player-$VERSION.img.xz" "$OUT_DIR/pi-player-$VERSION.img.xz.sha256")
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --title "$RELEASE_TAG" \
+              --notes "Flashable Raspberry Pi 4 image. See the README section 'Flash the image'."
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --prerelease --target "$GITHUB_SHA" \
+              --title "Image build $GITHUB_RUN_NUMBER (${GITHUB_SHA::7})" \
+              --notes "Test image from workflow_dispatch on $GITHUB_REF_NAME. CMS: ${CMS_URL:-default}, user: ${IMAGE_USER:-pi}."
+          fi

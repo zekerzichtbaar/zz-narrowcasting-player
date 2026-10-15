@@ -75,11 +75,42 @@ apply_video_mode() {
   echo changed
 }
 
+# Wifi country without raspi-config (chroot: no iw/rfkill). Same file edits as Bookworm's
+# `raspi-config nonint do_wifi_country` makes inside a chroot: regdomain on the kernel cmdline,
+# NetworkManager's saved WirelessEnabled=true (the default image ships false = wifi soft-blocked)
+# and saved rfkill wlan states 0. $1 = cmdline.txt, $2 = country, $3 = NM state file, $4 = rfkill dir.
+apply_wifi_country() {
+  local file="$1" country="$2" nmstate="$3" rfkill="$4" line f
+  if [[ ! "$country" =~ ^[A-Z]{2}$ ]]; then
+    echo "    ignoring invalid WIFI_COUNTRY '$country'" >&2
+    return 0
+  fi
+  if [[ -f "$file" ]]; then
+    line="$(head -n1 "$file" | tr -d '\r')"
+    line="$(sed -E 's/[[:space:]]*cfg80211\.ieee80211_regdom=[^[:space:]]*//g' <<<"$line")"
+    printf '%s cfg80211.ieee80211_regdom=%s\n' "$line" "$country" > "$file.tmp" && mv "$file.tmp" "$file"
+  fi
+  if [[ -f "$nmstate" ]]; then
+    sed -i 's/^WirelessEnabled=.*/WirelessEnabled=true/' "$nmstate"
+  fi
+  for f in "$rfkill"/*:wlan; do
+    [[ -e "$f" ]] && echo 0 > "$f"
+  done
+  return 0
+}
+
 [[ "${PI_PLAYER_INSTALL_LIB:-}" == 1 ]] && return 0 2>/dev/null
 
 if [[ $EUID -ne 0 ]]; then
   echo "run as root (sudo)" >&2
   exit 1
+fi
+
+# Image build (image/build.sh): running in a chroot, so no service (re)starts, rfkill or iw.
+CHROOT=""
+if [[ "${PI_PLAYER_CHROOT:-}" == 1 ]] || systemd-detect-virt -q --chroot 2>/dev/null; then
+  CHROOT=1
+  echo "==> chroot mode: services are enabled, not started"
 fi
 
 # Piped from wget (no checkout next to the script): fetch the repo source first.
@@ -135,11 +166,17 @@ cat > /etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf <<'DNS'
 address=/#/10.42.0.1
 DNS
 # Wifi stays rfkill-blocked on Pi OS until a regulatory country is set (Imager usually does it).
-if command -v raspi-config >/dev/null 2>&1 && [[ -z "$(raspi-config nonint get_wifi_country 2>/dev/null || true)" ]]; then
+if [[ -n "$CHROOT" ]]; then
+  for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    [[ -f "$f" ]] && break
+  done
+  apply_wifi_country "$f" "${WIFI_COUNTRY:-NL}" /var/lib/NetworkManager/NetworkManager.state /var/lib/systemd/rfkill
+  echo "    wifi country ${WIFI_COUNTRY:-NL} written to $f, wifi unblocked"
+elif command -v raspi-config >/dev/null 2>&1 && [[ -z "$(raspi-config nonint get_wifi_country 2>/dev/null || true)" ]]; then
   raspi-config nonint do_wifi_country "${WIFI_COUNTRY:-NL}" || true
   echo "    wifi country set to ${WIFI_COUNTRY:-NL} (override: sudo WIFI_COUNTRY=XX ./install.sh)"
 fi
-rfkill unblock wifi 2>/dev/null || true
+[[ -n "$CHROOT" ]] || rfkill unblock wifi 2>/dev/null || true
 
 echo "==> time sync (chrony)"
 NTP_SERVER="$(PYTHONPATH="$APP" python3 -c 'import sys; from pi_player import config; print(config.load(sys.argv[1])["ntp_server"])' "$ETC/config.toml")"
@@ -147,7 +184,7 @@ NTP_SERVER="$(PYTHONPATH="$APP" python3 -c 'import sys; from pi_player import co
 if [[ -f /etc/chrony/chrony.conf ]] && ! grep -q '^confdir /etc/chrony/conf.d' /etc/chrony/chrony.conf; then
   echo 'confdir /etc/chrony/conf.d' >> /etc/chrony/chrony.conf
 fi
-if [[ -n "$(apply_ntp "$NTP_SERVER" /etc/chrony/conf.d/pi-player.conf)" ]]; then
+if [[ -n "$(apply_ntp "$NTP_SERVER" /etc/chrony/conf.d/pi-player.conf)" && -z "$CHROOT" ]]; then
   systemctl restart chrony 2>/dev/null || true
 fi
 echo "    ntp_server: ${NTP_SERVER:-<distro pool>}"
@@ -166,10 +203,10 @@ done
 
 echo "==> service"
 install -m 0644 "$SRC/systemd/pi-player.service" "$UNIT"
-systemctl daemon-reload
+[[ -n "$CHROOT" ]] || systemctl daemon-reload
 systemctl enable chrony >/dev/null 2>&1 || true
 systemctl enable pi-player.service
-systemctl restart pi-player.service
+[[ -n "$CHROOT" ]] || systemctl restart pi-player.service
 
 echo "==> done. Logs: journalctl -u pi-player -f"
 if [[ -n "$REBOOT" ]]; then
