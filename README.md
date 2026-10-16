@@ -25,7 +25,7 @@ switch at the same moment. First-time setup (wifi and pairing) is done on the sc
 ## 0. Flash the image
 
 The quickest way to a working screen: a ready-to-flash image with Raspberry Pi OS Lite 64-bit
-(Bookworm) and pi-player preinstalled, the CMS URL (`https://narrowcasting.zekerzichtbaar.nl`)
+(Bookworm) and pi-player preinstalled, the CMS URL (`https://app.zekerzichtbaar.tv`)
 and wifi country (`NL`) already set. No SSH, no ethernet and no install step needed.
 
 1. **Download** `pi-player-<version>.img.xz` and its `.sha256` from the

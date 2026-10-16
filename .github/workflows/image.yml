@@ -17,7 +17,7 @@ on:
         default: pi-player
       cms_url:
         description: CMS URL baked into /etc/pi-player/config.toml
-        default: https://narrowcasting.zekerzichtbaar.nl
+        default: https://app.zekerzichtbaar.tv
       wifi_country:
         description: Wifi country (ISO 3166 alpha-2)
         default: NL

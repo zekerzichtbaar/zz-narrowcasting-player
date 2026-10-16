@@ -17,7 +17,7 @@ BASE_URL=https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/r
 BASE_SHA256=9e938c5a6981c3f498b3b564c527f3e1fd58ef20bbf703be0eea748384a6c1af
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CMS_URL="${CMS_URL:-https://narrowcasting.zekerzichtbaar.nl}"
+CMS_URL="${CMS_URL:-https://app.zekerzichtbaar.tv}"
 IMAGE_USER="${IMAGE_USER:-pi}"
 IMAGE_PASSWORD="${IMAGE_PASSWORD:-pi-player}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-NL}"
