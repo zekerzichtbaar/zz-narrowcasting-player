@@ -143,7 +143,7 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends chrony python3 \
   python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base \
   python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
+  gstreamer1.0-plugins-bad gstreamer1.0-libav
 
 echo "==> files"
 install -d -m 0755 "$APP"
@@ -167,10 +167,10 @@ else
     sed -i 's/^manifest_poll = 300$/manifest_poll = 30/' "$ETC/config.toml"
     echo "    manifest_poll 300 -> 30 (HTTP protocol)"
   fi
-  # GPU rotation froze and showed wrong colours on a real Pi 4: the old default "gl" becomes "cpu".
-  if grep -q '^rotate_method = "gl"$' "$ETC/config.toml"; then
-    sed -i 's/^rotate_method = "gl"$/rotate_method = "cpu"/' "$ETC/config.toml"
-    echo "    rotate_method gl -> cpu (GPU rotation broken on the Pi 4)"
+  # The Pi no longer turns video (the CMS serves turned files): drop the old rotation settings.
+  if grep -qE '^(rotate_method|gl_sink) = ' "$ETC/config.toml"; then
+    sed -i -E '/^(rotate_method|gl_sink) = /d' "$ETC/config.toml"
+    echo "    removed rotate_method/gl_sink (the CMS turns the video now)"
   fi
 fi
 install -d -m 0700 "$STATE"

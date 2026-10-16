@@ -33,12 +33,8 @@ display_mode = "1920x1080@60"
 # GStreamer video sink (plus properties). Pi: "kmssink"; e.g. "kmssink connector-id=32" when
 # more than one HDMI output is connected. Dev machine: "autovideosink".
 video_sink = "kmssink"
-# Screens hung upright (CMS "Stand van het scherm" 90/270): how the picture is turned.
-# "cpu" = videoflip (a 1080p25 transpose, about a third of one core). "gl" = on the GPU (frames into
-# GL, glvideoflip, shown by gl_sink via GBM/KMS): on a real Pi 4 it froze on the first frame and
-# showed wrong colours, so it is opt-in until fixed. Landscape screens never turn.
-rotate_method = "cpu"
-gl_sink = "glimagesink"
+# Screens hung upright (CMS "Stand van het scherm" 90/270) need nothing here: the CMS serves a
+# video that is already turned, so it plays zero-copy into kmssink like a landscape one.
 
 # Frame timing is locked to the system clock by GStreamer; this is only a safety net.
 [sync]

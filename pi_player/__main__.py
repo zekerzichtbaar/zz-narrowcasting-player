@@ -29,18 +29,18 @@ def runtime_dir():
             pass
 
 
-def play_synced(display, cfg, content=None, keep_playing=lambda: True, rotation=0):
+def play_synced(display, cfg, content=None, keep_playing=lambda: True):
     """Play the video locked to the group clock until a new version is due ("switch") or
     keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch."""
     video = cfg["video"]
     man = content.current_manifest() if content and video == content.current else None
     epoch = float(man.get("epoch") or 0) if man else float(cfg["epoch"])  # manifest is authoritative
-    duration = display.play(video, epoch, rotation)
+    duration = display.play(video, epoch)
     if man and abs(float(man["duration"]) - duration) > 0.05:
         log.warning("manifest duration %.3f s != file duration %.3f s; looping on the file's",
                     float(man["duration"]), duration)
-    log.info("playing %s (version %s, duration %.3f s, epoch %s, rotation %s)", video, man and man["version"],
-             duration, epoch, rotation)
+    log.info("playing %s (version %s, duration %.3f s, epoch %s)", video, man and man["version"],
+             duration, epoch)
     heartbeat.STATUS["state"] = "PLAYING"
     th, last_log = cfg["sync"], 0.0
     while True:
@@ -160,10 +160,10 @@ class Agent:
                 continue
             if st == state.PLAYING:
                 self.shown = None
-                rot = self.rotation()  # a new rotation leaves the loop and restarts turned, no download
+                # The video is never turned here: for a panel at 90/270 the CMS serves a turned
+                # file, so a new rotation arrives as a new version (download + switch).
                 if play_synced(self.display, self.cfg, self.content,
-                               lambda: self.state() == state.PLAYING and not self.identifying()
-                               and self.rotation() == rot, rot) == "switch":
+                               lambda: self.state() == state.PLAYING and not self.identifying()) == "switch":
                     switch(self.content, self.cfg)
                 continue
             self.show(self.screen_key(st))
@@ -173,7 +173,7 @@ class Agent:
 def run(cfg):
     if cfg["video_sink"].startswith("kmssink"):  # we own the HDMI console
         quiet_console()
-    display = Display(cfg["video_sink"], cfg["gl_sink"], cfg["rotate_method"])
+    display = Display(cfg["video_sink"])
 
     def stop(*_):
         display.close()
@@ -228,7 +228,7 @@ def main():
     p.add_argument("--video", help="override video path")
     p.add_argument("--epoch", type=float, help="override sync epoch")
     p.add_argument("--rotation", type=int, choices=[0, 90, 270],
-                   help="panel hung this many degrees clockwise (only without content updates; the CMS decides otherwise)")
+                   help="panel hung this many degrees clockwise, turns the setup screens only (without content updates; the CMS decides otherwise)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load(a.config)

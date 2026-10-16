@@ -16,8 +16,6 @@ DEFAULTS = {
     "ntp_server": "",
     "display_mode": "1920x1080@60",
     "video_sink": "kmssink",
-    "gl_sink": "glimagesink",
-    "rotate_method": "cpu",
     "rotation": 0,
     "sync": {"interval": 1.0, "seek_threshold": 0.5},
 }

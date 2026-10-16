@@ -108,7 +108,7 @@ sudo reboot                           # once, so the kernel console text disappe
 
 `install.sh` does the following:
 
-- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` (DejaVu only as a fallback: the setup screens use the fonts in `pi_player/fonts/`, same look as the CMS player) and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav gstreamer1.0-gl`). It uses no pip and no venv.
+- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` (DejaVu only as a fallback: the setup screens use the fonts in `pi_player/fonts/`, same look as the CMS player) and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav`). It uses no pip and no venv.
 - Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
 - Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
 - Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
@@ -213,9 +213,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
 | `display_mode` | `"1920x1080@60"` | HDMI mode, set on the kernel cmdline by `install.sh` (re-run + reboot after changing). Smoothest when the refresh is a multiple of the fps: `@60` for 30 fps, `@50` for 25 fps. Many PC monitors reject `@50` ("Out of range"); TVs accept both. Empty = leave the cmdline alone. |
 | `video_sink` | `"kmssink"` | GStreamer sink, plus properties (e.g. `"kmssink connector-id=32"` with two HDMI outputs). Dev machine: `"autovideosink"`. |
-| `rotate_method` | `"cpu"` | Screens hung upright (manifest `rotation` 90/270): `"cpu"` turns the video with `videoflip`, `"gl"` on the GPU (`glupload ! glcolorconvert ! glvideoflip` into `gl_sink`). GL froze on the first frame and showed wrong colours on a real Pi 4, so it is opt-in; `install.sh` turns an old `"gl"` into `"cpu"`. GL that is missing or fails to start falls back to `"cpu"` by itself. The Pi 4 display itself cannot turn a plane 90 degrees (vc4 only flips), so KMS rotation is not an option. |
-| `gl_sink` | `"glimagesink"` | Sink for GPU-turned video (GBM/KMS on the console; the agent sets `GST_GL_WINDOW=gbm` when there is no X/Wayland). |
-| `rotation` | `0` | Only without content updates (dev, `--video`): how the panel hangs. Otherwise the CMS decides via the manifest. |
+| `rotation` | `0` | Only without content updates (dev, `--video`): how the panel hangs, for the setup screens. Otherwise the CMS decides via the manifest. The video is never turned on the Pi: for a panel hung upright (90/270) the CMS serves a 1920x1080 file with the picture already turned, which plays zero-copy into `kmssink` (turning on a Pi 4 was too heavy: GPU froze with wrong colours, CPU managed 1 fps). Re-running `install.sh` removes the old `rotate_method`/`gl_sink` settings. |
 | `update_url_prefix` | GitHub repo | Player updates ("Speler bijwerken") are only installed from a URL starting with this (default `https://github.com/zekerzichtbaar/zz-narrowcasting-player/`). See `docs/protocol.md` section 7. |
 | `[sync] interval` | `1.0` | How often to check the position (s). |
 | `[sync] seek_threshold` | `0.5` | If \|drift\| is above this (clock stepped, pipeline stalled), re-join the group clock (s). |
@@ -349,11 +347,12 @@ Run `sudo systemctl kill pi-player`: playback should be back within
 
 **Rotated screen** (CMS "Stand van het scherm" 90 or 270; mock: `curl -X POST 'http://localhost:8080/admin/rotate?rotation=90'`):
 
-1. Hang the screen turned clockwise (or set `rotation=90` on the mock with the screen flat) and
-   publish a portrait video (`&orientation=portrait`). Within a few seconds the video restarts
-   upright, without downloading again; the setup, waiting and identify screens are upright too.
-2. `journalctl -u pi-player -f` shows `rotation 0 -> 90` and `playing ... rotation 90`. A line
-   `GPU rotation failed ... turning on the CPU` means GL did not start (only with `rotate_method = "gl"`).
+1. Hang the screen turned clockwise and set "Stand van het scherm" in the CMS, with a portrait
+   playlist on it. The CMS serves the turned variant of the video: the Pi downloads it as a new
+   version and plays it as is, upright; the setup, waiting and identify screens are upright too.
+   (The mock serves whatever file you publish: it does not turn video, so publish one that is
+   already turned to test with it.)
+2. `journalctl -u pi-player -f` shows `rotation 0 -> 90` and a new `playing ...` line for the variant.
 3. Measure: the once-a-minute `frames this loop` line should show no growing `dropped`, and
    `top` should leave headroom for the agent. Film it like the sync test: still within 1 frame
    of a landscape neighbour in the same group.
