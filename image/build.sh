@@ -5,7 +5,7 @@
 #
 #   sudo image/build.sh
 #   sudo CMS_URL=https://cms.example IMAGE_USER=pi IMAGE_PASSWORD=secret WIFI_COUNTRY=NL \
-#        VERSION=1.2.3 OUT_DIR=/tmp/out image/build.sh
+#        VERSION=v1.2.3 OUT_DIR=/tmp/out image/build.sh
 #
 # Output: $OUT_DIR/pi-player-$VERSION.img.xz + .img.xz.sha256
 # Host tools: curl, xz, sha256sum, sfdisk/partx/losetup (util-linux), e2fsck/resize2fs
@@ -113,7 +113,7 @@ cp -r "$REPO/install.sh" "$REPO/pi_player" "$REPO/config" "$REPO/systemd" "$MNT$
 
 log "running install.sh in the chroot"
 chroot "$MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 \
-  PI_PLAYER_CHROOT=1 WIFI_COUNTRY="$WIFI_COUNTRY" bash "$SRC_IN/install.sh"
+  PI_PLAYER_CHROOT=1 PI_PLAYER_VERSION="$VERSION" WIFI_COUNTRY="$WIFI_COUNTRY" bash "$SRC_IN/install.sh"
 
 log "baking cms_url = $CMS_URL"
 sed -i "s|^cms_url = .*|cms_url = \"$CMS_URL\"|" "$MNT/etc/pi-player/config.toml"
@@ -187,6 +187,7 @@ CMDLINE_TOKENS=()
 eval "$(PI_PLAYER_INSTALL_LIB=1 bash -c ". '$REPO/install.sh'; declare -p CMDLINE_TOKENS")"
 
 check "/opt/pi-player present" test -f "$MNT/opt/pi-player/pi_player/__main__.py"
+check "pi_player/VERSION = $VERSION" grep -qx "$VERSION" "$MNT/opt/pi-player/pi_player/VERSION"
 check "pi-player.service enabled" test -L "$MNT/etc/systemd/system/multi-user.target.wants/pi-player.service"
 for p in python3 python3-gi python3-pil python3-qrcode gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl chrony dnsmasq-base; do

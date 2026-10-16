@@ -10,11 +10,12 @@ import logging
 import queue
 import secrets
 import shutil
-import socket
 import subprocess
+import http.client
 import threading
 import time
-import urllib.parse
+import urllib.error
+import urllib.request
 
 log = logging.getLogger("pi-player")
 
@@ -24,6 +25,9 @@ HOTSPOT_IP = "10.42.0.1"  # also in install.sh (dnsmasq wildcard) — keep in sy
 PW_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # no 0/o/1/l/i: read off a screen, typed on a phone
 WIFI_TYPES = ("wifi", "802-11-wireless")
 NET_CHECK_EVERY = 5.0
+CMS_CHECK_EVERY = 30.0  # while the CMS answers, probe it this often
+CMS_TIMEOUT = 5.0
+CMS_FAILS = 2           # failed probes in a row (NET_CHECK_EVERY apart) before "offline"
 
 
 # --- pure helpers ---------------------------------------------------------------------------
@@ -137,21 +141,18 @@ def wifi_iface():
     return None
 
 
-def route_ok(cms_url):
-    """Fallback for dev machines without nmcli: is there a route to the CMS host (UDP connect
-    sends nothing). DNS failure counts as offline."""
-    u = urllib.parse.urlsplit(cms_url)
+def cms_reachable(cms_url, timeout=CMS_TIMEOUT):
+    """Does the CMS answer at all: GET {cms_url}/up (Laravel's health route). Any HTTP status
+    counts, a 404 or 500 is a CMS problem, not a network one, and must not start the hotspot.
+    Only DNS, connect, TLS and timeout errors are "unreachable". Over https a captive portal or a
+    wifi without internet can't fake the certificate, so it counts as unreachable."""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(3)
-            s.connect((u.hostname or "8.8.8.8", u.port or 80))
+        with urllib.request.urlopen(cms_url.rstrip("/") + "/up", timeout=timeout):
             return True
-    except OSError:
+    except urllib.error.HTTPError:
+        return True
+    except (OSError, ValueError, http.client.HTTPException):
         return False
-
-
-def online(cms_url):
-    return is_online(devices()) if available() else route_ok(cms_url)
 
 
 def scan(rescan=True):
@@ -230,12 +231,23 @@ def forget_ours():
 # --- background threads ---------------------------------------------------------------------
 
 class Monitor:
-    """Probes the network every NET_CHECK_EVERY s in a thread, so a slow nmcli/DNS never stalls
-    the main loop. `ok` is the latest answer."""
+    """Is the Pi online: NetworkManager connected (not counting our hotspot) AND the CMS answering.
+    A wifi without internet is "connected" for NM, so the CMS probe decides. Probes in a thread
+    (every NET_CHECK_EVERY s), so a slow nmcli/DNS never stalls the main loop. `ok` is the latest
+    answer; the state machine's OfflineTimer turns it into WIFI_SETUP after `offline_timeout`.
 
-    def __init__(self, cms_url):
+    ponytail: an own GET /up instead of watching the manifest/heartbeat results, so the check
+    also works while pairing and has one owner. Costs one tiny request per 30 s."""
+
+    def __init__(self, cms_url, nm_ok=None, cms_ok=None, clock=time.monotonic):
         self.cms_url = cms_url
-        self.ok = online(cms_url)
+        self.nm_ok = nm_ok or (lambda: is_online(devices()) if available() else True)  # dev: no nmcli
+        self.cms_ok = cms_ok or (lambda: cms_reachable(cms_url))
+        self.clock = clock
+        self.ok = False
+        self.fails = 0
+        self.checked = -1e9
+        self.ok = self.check()
         self.wake = threading.Event()
 
     def start(self):
@@ -245,17 +257,34 @@ class Monitor:
     def poke(self):
         self.wake.set()
 
+    def check(self, force=False):
+        """One sample. NM down = offline straight away (cheap, authoritative). While the CMS
+        answered, it is probed only every CMS_CHECK_EVERY s, and one failed probe after a good
+        one is retried on the next tick before it counts (one lost request is no outage)."""
+        if not self.nm_ok():
+            self.fails, self.checked = 0, -1e9
+            return False
+        now = self.clock()
+        if self.ok and not self.fails and not force and now - self.checked < CMS_CHECK_EVERY:
+            return True
+        self.checked = now
+        if self.cms_ok():
+            self.fails = 0
+            return True
+        self.fails += 1
+        return self.ok and self.fails < CMS_FAILS
+
     def _loop(self):
         while True:
-            self.wake.wait(NET_CHECK_EVERY)
+            poked = self.wake.wait(NET_CHECK_EVERY)
             self.wake.clear()
             try:
-                ok = online(self.cms_url)
+                ok = self.check(force=poked)
             except Exception as e:
                 log.warning("network probe failed: %s", e)
                 ok = False
             if ok != self.ok:
-                log.info("network %s", "back" if ok else "lost")
+                log.info("network %s", "back" if ok else "lost (no connection or CMS unreachable)")
             self.ok = ok
 
 
@@ -280,6 +309,7 @@ class WifiSetup:
         self.portal = None
         self.iface = None
         self.scanned_at = -1e9
+        self.no_cms = False
 
     def start(self):
         threading.Thread(target=self._loop, name="wifi", daemon=True).start()
@@ -349,11 +379,22 @@ class WifiSetup:
                 time.sleep(1)
         return True
 
-    def _online(self):
-        ok = is_online(devices())
-        if ok and self.monitor:
-            self.monitor.poke()
-        return ok
+    def _online(self, tries=3):
+        """Connected and the CMS answering. A few tries: DHCP/DNS settle after `connection up`.
+        Sets self.no_cms when NM is connected but the CMS isn't (e.g. a wifi without internet)."""
+        self.no_cms = False
+        if not is_online(devices()):
+            return False
+        for i in range(tries):
+            if i:
+                time.sleep(5)
+            if not self.monitor or self.monitor.cms_ok():
+                if self.monitor:
+                    self.monitor.poke()
+                return True
+        self.no_cms = True
+        log.warning("wifi: connected, but the CMS is not reachable")
+        return False
 
     def _loop(self):
         last_try = hold = 0.0
@@ -381,7 +422,10 @@ class WifiSetup:
                         log.info("wifi: connected to %r", ssid)
                         hold = time.monotonic() + self.HOLD_AFTER_CONNECT
                         continue
-                    self.error = f"Could not connect to {ssid}: {err or 'no connection'}"
+                    if ok and self.no_cms:
+                        self.error = f"Connected to {ssid}, but the server is not reachable (no internet?)"
+                    else:
+                        self.error = f"Could not connect to {ssid}: {err or 'no connection'}"
                     last_try = time.monotonic()
                 elif job and job[0] == "rescan":
                     time.sleep(2)
@@ -436,8 +480,98 @@ def _selfcheck():
     assert friendly_error("Error: Connection activation failed: Secrets were required, but not "
                           "provided.") == "Wrong password?"
     assert friendly_error("Error: No network with SSID 'x' found.") == "Network not reachable."
-    assert route_ok("http://127.0.0.1:8080") is True
+    _selfcheck_online()
     print("netman self-check OK")
+
+
+def _selfcheck_online():
+    """Online = NM connected AND the CMS answering; a wifi without internet ends in WIFI_SETUP."""
+    import http.server
+    from . import state
+
+    # cms_reachable against a local HTTP server: any status = reachable, closed port = not
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/up" else 404)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    assert cms_reachable(base) and cms_reachable(base + "/")
+    H.do_GET = lambda self: (self.send_response(500), self.end_headers())
+    assert cms_reachable(base)  # CMS broken, network fine: not a reason for the hotspot
+    srv.shutdown()
+    srv.server_close()
+    assert not cms_reachable(base, timeout=2)  # nobody listening
+    assert not cms_reachable("not a url")
+
+    # Monitor with fake NM / CMS / clock
+    t = [0.0]
+    net = {"nm": True, "cms": False, "probes": 0}
+
+    def cms():
+        net["probes"] += 1
+        return net["cms"]
+
+    m = Monitor("http://cms", nm_ok=lambda: net["nm"], cms_ok=cms, clock=lambda: t[0])
+    assert m.ok is False  # NM connected + CMS unreachable = offline (from the first sample)
+
+    def tick(dt=NET_CHECK_EVERY):
+        t[0] += dt
+        m.ok = m.check()
+        return m.ok
+
+    assert not tick() and not tick()  # stays offline, probing every tick while failing
+    net["cms"] = True
+    assert tick()  # NM connected + CMS reachable = online
+    n = net["probes"]
+    for _ in range(5):  # 25 s: no new probe while it answers
+        assert tick()
+    assert net["probes"] == n
+    assert tick() and net["probes"] == n + 1  # 30 s later: probe again
+    net["cms"] = False
+    t[0] += CMS_CHECK_EVERY
+    assert tick(0)  # one failed probe: not yet offline
+    assert not tick()  # second in a row (5 s later): offline
+    net["cms"] = True
+    assert tick()
+    m.checked = t[0]
+    assert m.check(force=True) and net["probes"] == n + 5  # poke: probes even within the interval
+    net["nm"] = False
+    n = net["probes"]
+    assert not tick() and net["probes"] == n  # NM down: offline at once, no probe
+    net["nm"] = True
+    assert tick() and net["probes"] == n + 1  # NM back: probe straight away
+
+    # via the state machine: wifi without internet -> WIFI_SETUP after offline_timeout
+    T = 600.0
+    net["cms"] = True
+    m = Monitor("http://cms", nm_ok=lambda: True, cms_ok=cms, clock=lambda: t[0])
+    timer, now = state.OfflineTimer(t[0]), t[0]
+    seen = []
+    for step in range(200):  # 1000 s in NET_CHECK_EVERY steps
+        if step == 10:
+            net["cms"] = False  # the wifi stays "connected", the internet goes away
+        ok = tick()
+        now = t[0]
+        seen.append(state.decide(ok, True, True, timer.update(ok, now), now, T))
+    lost = seen.index(state.WIFI_SETUP)
+    assert set(seen[:lost]) == {state.PLAYING} and set(seen[lost:]) == {state.WIFI_SETUP}, seen
+    assert T <= (lost - 10) * NET_CHECK_EVERY <= T + 2 * NET_CHECK_EVERY, lost
+    net["cms"] = True  # internet back: resumes playing on the next probe
+    ok = tick()
+    assert state.decide(ok, True, True, timer.update(ok, t[0]), t[0], T) == state.PLAYING
+    # not paired yet: pairing screen gives way after the short grace
+    net["cms"] = False
+    m = Monitor("http://cms", nm_ok=lambda: True, cms_ok=cms, clock=lambda: t[0])
+    timer = state.OfflineTimer(t[0], online=m.ok)
+    assert state.decide(m.ok, False, False, timer.update(m.ok, t[0]), t[0], T) == state.PAIRING
+    t[0] += state.OFFLINE_GRACE
+    assert state.decide(m.check(), False, False, timer.update(False, t[0]), t[0], T) == state.WIFI_SETUP
 
 
 if __name__ == "__main__":

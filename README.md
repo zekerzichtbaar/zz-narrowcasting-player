@@ -132,7 +132,7 @@ At any moment the screen shows exactly one of these four states:
 
 | State | When | Screen |
 |---|---|---|
-| `WIFI_SETUP` | no network | hotspot SSID, password, QR to join |
+| `WIFI_SETUP` | offline: no network, or the CMS unreachable | hotspot SSID, password, QR to join |
 | `PAIRING` | network, not paired | pairing code + QR to the CMS pairing page |
 | `WAITING` | paired, nothing published | "Waiting for content" + screen name |
 | `PLAYING` | paired + video | the synced MP4 |
@@ -157,13 +157,24 @@ Walkthrough on a fresh Pi with no ethernet:
 5. **Waiting / playing.** No reboot is needed. The screen moves to *Waiting for content*, or
    starts playing straight away if its group already has a published video.
 
-If ethernet is connected, the Pi skips wifi setup. Wifi setup also comes back on its own:
+If ethernet is connected (and reaches the CMS), the Pi skips wifi setup.
+
+**Online** means: NetworkManager has an ethernet or wifi connection (not the setup hotspot) *and*
+the CMS answers `GET <cms_url>/up` (any HTTP status, 5 s timeout, every 30 s while it answers;
+two failed probes in a row count). A wifi without internet, or one behind a guest-network login
+page, therefore counts as offline. After joining a network from the setup page the Pi checks the
+CMS too and shows *Connected to X, but the server is not reachable* when it can't get there.
+A CMS that is completely down for longer than `offline_timeout` also brings up the hotspot
+(the Pi can't tell that apart from a broken network); it returns as soon as the CMS answers.
+
+Wifi setup also comes back on its own:
 
 - **Network lost while playing:** the screen keeps playing for `offline_timeout` (10 min).
   After that it shows the wifi-setup screen.
 - **Network lost while pairing or waiting:** the wifi-setup screen appears after 30 s.
 - **While the hotspot is up:** every `wifi_retry` (2 min) the Pi drops the hotspot briefly
-  and retries its saved networks. When a network (or ethernet) is back, it returns to normal.
+  and retries its saved networks. When a network (or ethernet) is back and the CMS answers, it
+  returns to normal.
 
 **Unpairing in the CMS** (or a revoked token) sends the screen back to the pairing code.
 
@@ -201,6 +212,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `rotate_method` | `"gl"` | Screens hung upright (manifest `rotation` 90/270): `"gl"` turns the video on the GPU (`glupload ! glcolorconvert ! glvideoflip` into `gl_sink`), `"cpu"` with `videoflip`. GL that is missing or fails to start falls back to `"cpu"` by itself. The Pi 4 display itself cannot turn a plane 90 degrees (vc4 only flips), so KMS rotation is not an option. |
 | `gl_sink` | `"glimagesink"` | Sink for GPU-turned video (GBM/KMS on the console; the agent sets `GST_GL_WINDOW=gbm` when there is no X/Wayland). |
 | `rotation` | `0` | Only without content updates (dev, `--video`): how the panel hangs. Otherwise the CMS decides via the manifest. |
+| `update_url_prefix` | GitHub repo | Player updates ("Speler bijwerken") are only installed from a URL starting with this (default `https://github.com/zekerzichtbaar/zz-narrowcasting-player/`). See `docs/protocol.md` section 7. |
 | `[sync] interval` | `1.0` | How often to check the position (s). |
 | `[sync] seek_threshold` | `0.5` | If \|drift\| is above this (clock stepped, pipeline stalled), re-join the group clock (s). |
 
@@ -270,6 +282,7 @@ restart the service. Then:
 - **Group wait + moment:** publish with `&wait=1` (screens download and report `pending_version`, a screen with nothing on it starts right away), then `curl -X POST 'http://localhost:8080/admin/activate?delay=45'`: same file, new version, every screen switches at the same moment without downloading again.
 - **Failed download:** add `&bad_sha=1`. The Pi rejects the file, keeps playing the old one, logs the mismatch and retries at the next poll.
 - **Unpublish:** `curl -X POST http://localhost:8080/admin/unpublish` (the screen goes to WAITING).
+- **Player update:** `curl -X POST 'http://localhost:8080/admin/update?version=v1.3.0'` puts `update` in every manifest until a heartbeat reports that `agent_version`. The Pi only installs it from the GitHub URL (`update_url_prefix`) and needs `systemd-run` (a dev machine marks it failed in `update.json`).
 - **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING at its next poll or heartbeat).
 
 Without a Pi, you can run the agent on Linux with GStreamer (`video_sink = "autovideosink"`

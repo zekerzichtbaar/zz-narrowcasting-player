@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, bell, config, content as content_mod, heartbeat, netman, pairing, screens, state
+from . import __version__, bell, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
 from .gst import Display, DisplayError, to_rotation
 
 log = logging.getLogger("pi-player")
@@ -192,6 +192,7 @@ def run(cfg):
             pair.start()
             heartbeat.Heartbeat(cfg, content).start()
             bell.Bell(cfg, content).start()  # poll/identify -> manifest now, not at the next poll
+            updater.Updater(cfg, content).start()  # "Speler bijwerken": runner in its own unit
             monitor = netman.Monitor(cfg["cms_url"]).start()
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()

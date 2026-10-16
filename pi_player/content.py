@@ -184,6 +184,7 @@ class Content:
         self.state = load_state(self.dir)
         self.switch_at = None  # set once next.mp4 is verified and waiting
         self.identify = 0  # identify_until (Unix s) of the last manifest; not persisted
+        self.update = None  # `update` of the last manifest ("Speler bijwerken"); not persisted
         p = self.state["pending"]
         if p and os.path.exists(self.next):  # survived a restart: verified earlier
             self.switch_at = switch_time(p, time.time(), self.has_current())
@@ -228,6 +229,11 @@ class Content:
                     pass
             self.state["current"], self.state["pending"], self.switch_at = None, None, None
             save_state(self.dir, self.state)
+
+    def update_request(self):
+        """The manifest's raw `update` (validated by updater.valid_update), None when not asked."""
+        with self.lock:
+            return self.update
 
     def identify_until(self):
         with self.lock:
@@ -286,8 +292,9 @@ class Content:
         if not token:
             return
         m = fetch_manifest(self.cfg["cms_url"], token)
-        with self.lock:  # identifying is outside version: take it from every answer
+        with self.lock:  # identifying and updates are outside version: take them from every answer
             self.identify = float((m or {}).get("identify_until") or 0)
+            self.update = (m or {}).get("update")
         if m and m.get("screen"):
             self.set_screen(m["screen"])
         if m and "rotation" in m:  # outside version too: turning needs no download, also when version null
@@ -466,7 +473,16 @@ def _selfcheck():
             assert hits == ["/a.mp4"] and c.pending_version() is None and c.identify_until() == 4102444860
             served["m"] = wait
             c.check()
-            assert c.identify_until() == 0 and c.rotation() == 0
+            assert c.identify_until() == 0 and c.rotation() == 0 and c.update_request() is None
+            # update request ("Speler bijwerken"): same version, nothing downloaded or switched
+            upd = {"version": "v9.0.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/x.tar.gz"}
+            served["m"] = {**wait, "update": upd}
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.update_request() == upd
+            assert c.current_manifest() == wait  # not stored with the content
+            served["m"] = wait  # asked update done (or an older CMS without the field)
+            c.check()
+            assert c.update_request() is None
             # rotation: same version, nothing downloaded, taken over and kept in state.json
             served["m"] = {**wait, "rotation": 90, "orientation": "portrait"}
             c.check()
@@ -547,6 +563,19 @@ def _selfcheck():
         post("/admin/identify?seconds=60")
         c.check()
         assert c.rotation() == 90 and c.identify_until() > time.time()
+        # "Speler bijwerken" over the wire: in the version-null body too, gone once the heartbeat reports it
+        from .updater import valid_update
+        mock_cms.STATE.update(identify_until=0)
+        post("/admin/update?version=v9.0.0")
+        c.check()
+        assert valid_update(c.update_request()) == {
+            "version": "v9.0.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v9.0.0.tar.gz"}
+        assert not c.has_current() and c.pending_version() is None
+        hb = urllib.request.Request(cms_url + "/api/devices/heartbeat", method="POST", data=b'{"agent_version": "v9.0.0"}',
+                                    headers={"Authorization": "Bearer devtoken", "Content-Type": "application/json"})
+        urllib.request.urlopen(hb, timeout=5).read()
+        c.check()
+        assert c.update_request() is None
         cms.shutdown()
     finally:
         shutil.rmtree(tmp)

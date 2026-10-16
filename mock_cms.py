@@ -22,6 +22,8 @@ Admin (curl):
   POST /admin/identify[?seconds=60]   "Scherm identificeren": identify_until = now+seconds in every
                                  manifest (version unchanged; nothing published = 200 version null)
   POST /admin/rotate?rotation=90   how the screen hangs (0|90|270 clockwise), in every manifest; rings `poll`
+  POST /admin/update[?version=v1.3.0][&url=...]   "Speler bijwerken": `update` in every manifest until a
+                                 heartbeat reports that agent_version (no version = clear); rings `poll`
   POST /admin/unpair[?device_id=pi-...]   revoke tokens (all, or that device's): next call gets 401
   POST /admin/pair[?token=T]     re-enable the hand-provisioned --token (or add token T)
   POST /admin/poll               ring `poll` on the bel
@@ -47,7 +49,7 @@ import urllib.parse
 
 from pi_player.bell import accept_key, encode_frame, read_frame
 
-STATE = {"manifest": None, "identify_until": 0, "rotation": 0}
+STATE = {"manifest": None, "identify_until": 0, "rotation": 0, "update": None}
 TOKENS = {}  # device token -> {"device_id", "screen"}; the --token one is added in main()
 CODES = {}   # pairing code -> {"device_id", "expires_at", "token"|None}
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
@@ -136,6 +138,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not token_ok(self.headers):
             return self._json(401, {"error": "unauthorized"})
         log(f"heartbeat {self.address_string()}:", body.decode(errors="replace"))
+        try:
+            agent = json.loads(body or b"{}").get("agent_version")
+        except ValueError:
+            agent = None
+        if STATE["update"] and agent == STATE["update"]["version"]:
+            log("update", agent, "done")
+            STATE["update"] = None
         self._json(204)
 
     def bell_socket(self):
@@ -314,9 +323,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             until = STATE["identify_until"] if STATE["identify_until"] > time.time() else 0
             if m:
                 return self._json(200, {**m, "identify_until": until, "rotation": STATE["rotation"],
-                                        "screen": screen or m["screen"]})
-            if until:
+                                        "update": STATE["update"], "screen": screen or m["screen"]})
+            if until or STATE["update"]:
                 return self._json(200, {"version": None, "identify_until": until, "rotation": STATE["rotation"],
+                                        "update": STATE["update"],
                                         "screen": screen or {"id": "scr_1", "name": "Mock screen", "group_id": "grp_1"}})
             return self._json(204)
         if url.path.startswith("/media/"):
@@ -364,6 +374,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"dropped": len(conns)})
         if url.path == "/pair":
             return self.claim()
+        if url.path == "/admin/update":
+            v = q.get("version")
+            STATE["update"] = {"version": v, "url": q.get("url") or
+                               f"https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/{v}.tar.gz"} if v else None
+            log("update", json.dumps(STATE["update"]))
+            ring("poll")
+            return self._json(200, {"update": STATE["update"]})
         if url.path == "/admin/unpublish":
             STATE["manifest"] = None
             ring("poll")

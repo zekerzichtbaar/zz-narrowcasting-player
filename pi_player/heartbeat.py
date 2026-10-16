@@ -13,8 +13,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import __version__
+from . import __version__, read_version
 from .pairing import device_id
+from .updater import mark_alive
 
 log = logging.getLogger("pi-player")
 
@@ -118,7 +119,7 @@ class Heartbeat:
         return (STATUS["state"], cur and cur["version"], self.content.pending_version())
 
     def _loop(self):
-        last_key, last_sent = None, float("-inf")
+        last_key, last_sent, marked = None, float("-inf"), False
         while True:
             token = self.content.token()
             key = self._status()
@@ -131,6 +132,9 @@ class Heartbeat:
                 last_key, last_sent = key, time.monotonic()
                 try:
                     send(self.cfg["cms_url"], token, payload)
+                    if not marked:  # the updater's proof that this version runs and reaches the CMS
+                        mark_alive(self.content.dir)
+                        marked = True
                 except Unauthorized:
                     log.warning("heartbeat: 401, token revoked; deleting token")
                     self.content.forget_token()
@@ -144,6 +148,51 @@ class Heartbeat:
 
 # ---------- self-check ----------
 
+def _check_version():
+    """pi_player/VERSION (read_version) and install.sh's resolve_version, which writes it."""
+    import shutil
+    import subprocess
+    import tempfile
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, "VERSION")
+    assert read_version(f) == "dev"
+    for content, want in (("v1.2.3\n", "v1.2.3"), ("", "dev"), ("rm -rf /\n", "dev"),
+                          ("dev-v0.6.0-2-gabc1234-dirty", "dev-v0.6.0-2-gabc1234-dirty")):
+        open(f, "w").write(content)
+        assert read_version(f) == want, (content, read_version(f))
+    assert __version__ == "dev" or __version__.startswith(("v", "dev-")), __version__
+
+    install = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "install.sh")
+    if not os.path.exists(install) or not shutil.which("bash"):
+        return
+
+    def resolve(src, env_version=None):
+        env = {k: v for k, v in os.environ.items() if k != "PI_PLAYER_VERSION"}
+        if env_version is not None:
+            env["PI_PLAYER_VERSION"] = env_version
+        env["PI_PLAYER_INSTALL_LIB"] = "1"
+        return subprocess.run(["bash", "-c", '. "$0"; resolve_version "$1"', install, src],
+                              env=env, check=True, capture_output=True, text=True).stdout.strip()
+
+    src = tempfile.mkdtemp()
+    os.makedirs(os.path.join(src, "pi_player"))
+    assert resolve(src) == "dev"  # tarball without git or VERSION
+    assert resolve(src, "v2.0.0") == "v2.0.0"
+    assert resolve(src, "bad version") == "dev"
+    open(os.path.join(src, "pi_player", "VERSION"), "w").write("v1.9.0\n")
+    assert resolve(src) == "v1.9.0" and resolve(src, "v2.0.0") == "v2.0.0"
+    os.remove(os.path.join(src, "pi_player", "VERSION"))
+    if shutil.which("git"):
+        git = ["git", "-C", src, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+               "-c", "tag.gpgsign=false"]
+        subprocess.run(git[:3] + ["init", "-q"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "a"], check=True)
+        subprocess.run(git + ["tag", "v1.2.3"], check=True)
+        assert resolve(src) == "v1.2.3", resolve(src)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "b"], check=True)
+        dev = resolve(src)
+        assert dev.startswith("dev-v1.2.3-1-g"), dev  # untagged checkout = dev version
+
 def _selfcheck():
     import http.server
     import tempfile
@@ -152,6 +201,7 @@ def _selfcheck():
                   "version": "v1", "pending_version": None, "drift_ms": 3.1, "uptime": 12,
                   "ip": "10.0.0.2", "network": "wifi"}
     assert heartbeat_payload("pi-1", 0, "WAITING", None, "v2", 5.0, 0, None, None)["drift_ms"] is None
+    _check_version()
     k = ("PLAYING", "v1", None)
     assert due(k, None, 0) and not due(k, k, 29.9) and due(k, k, 30.0)
     assert due(("PLAYING", "v1", "v2"), k, 0)

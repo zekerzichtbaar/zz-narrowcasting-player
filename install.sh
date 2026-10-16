@@ -99,6 +99,22 @@ apply_wifi_country() {
   return 0
 }
 
+# Player version (pi_player/VERSION, reported as agent_version): $PI_PLAYER_VERSION (image build,
+# updater), else a VERSION file already in the source, else the exact v* tag of a git checkout,
+# else "dev-<describe>" for an untagged checkout, else "dev". $1 = source dir.
+resolve_version() {
+  local src="$1" v="${PI_PLAYER_VERSION:-}"
+  if [[ -z "$v" && -f "$src/pi_player/VERSION" ]]; then
+    v="$(tr -d '[:space:]' < "$src/pi_player/VERSION")"
+  fi
+  if [[ -z "$v" ]] && command -v git >/dev/null 2>&1 && git -C "$src" rev-parse --git-dir >/dev/null 2>&1; then
+    v="$(git -C "$src" describe --tags --exact-match --match 'v*' 2>/dev/null \
+      || echo "dev-$(git -C "$src" describe --tags --always --dirty 2>/dev/null)")"
+  fi
+  [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] || v=dev
+  printf '%s\n' "$v"
+}
+
 [[ "${PI_PLAYER_INSTALL_LIB:-}" == 1 ]] && return 0 2>/dev/null
 
 if [[ $EUID -ne 0 ]]; then
@@ -133,6 +149,9 @@ echo "==> files"
 install -d -m 0755 "$APP"
 rm -rf "$APP/pi_player.new"
 cp -r "$SRC/pi_player" "$APP/pi_player.new"
+VERSION="$(resolve_version "$SRC")"
+printf '%s\n' "$VERSION" > "$APP/pi_player.new/VERSION"
+echo "    version $VERSION"
 find "$APP/pi_player.new" -name '__pycache__' -prune -exec rm -rf {} +
 rm -rf "$APP/pi_player"
 mv "$APP/pi_player.new" "$APP/pi_player"

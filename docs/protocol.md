@@ -40,7 +40,7 @@ Request:
 ```json
 {
   "device_id": "pi-10000000a1b2c3d4",
-  "agent_version": "0.1.0",
+  "agent_version": "v1.2.3",
   "hostname": "kantine-1",
   "resolution": "1920x1080"
 }
@@ -120,6 +120,7 @@ Response `200`:
   "identify_until": 0,
   "orientation": "landscape",
   "rotation": 0,
+  "update": null,
   "screen": { "id": "scr_42", "name": "Kantine links", "group_id": "grp_7" }
 }
 ```
@@ -128,8 +129,8 @@ Response `200` with `"version": null` (or `204` from an older CMS): paired but n
 no playlist, nothing published, or no version of the playlist ever got a video. Pi shows `WAITING`;
 a video it had (e.g. from before an unpair/re-pair, or after the CMS unpublished) is deleted. The
 body still carries `rotation` (an idle portrait screen turns its own screens), `identify_until`
-(show the name while the screen is identified, `0` = not) and `screen`:
-`{"version": null, "identify_until": 0, "rotation": 90, "screen": {...}}`.
+(show the name while the screen is identified, `0` = not), `update` and `screen`:
+`{"version": null, "identify_until": 0, "rotation": 90, "update": null, "screen": {...}}`.
 A newly published version whose video is still being made (or failed) is **not** this: the CMS
 keeps serving the previous video, with the same `version` as before, so the Pi does not even
 switch. Once the new video is ready, `version` changes.
@@ -148,6 +149,7 @@ Fields:
 | `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big, full screen, instead of the video or setup screen until this Unix time (the video re-joins the group clock afterwards). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
 | `orientation` | string | `landscape` (1920x1080) or `portrait` (1080x1920): the format of this video. Informational; the Pi plays whatever size the file has (fitted, black bars). |
 | `rotation` | int | How the panel physically hangs: `0`, `90` or `270` degrees turned **clockwise** (CMS "Stand van het scherm"). The Pi turns the picture back the other way (90 -> 90 degrees counter-clockwise), the video and the setup/identify screens alike. Also in the `version: null` body. **Not** part of `version`: a new rotation never downloads; the Pi restarts the loop turned (re-joining the group clock) and keeps the value in `state.json` for restarts without network. Missing (older CMS) = keep the last one. |
+| `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz"}`, the release this player should install, or `null`. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = (now - epoch) mod duration`.
@@ -186,7 +188,7 @@ Request:
 ```json
 {
   "device_id": "pi-10000000a1b2c3d4",
-  "agent_version": "0.1.0",
+  "agent_version": "v1.2.3",
   "time": 1760437213.42,
   "state": "PLAYING",
   "version": "12-0-9b74c9897bac",
@@ -207,11 +209,19 @@ next heartbeat simply follows 30 s later.
 | `version` | version currently on screen, `null` if none |
 | `pending_version` | verified download waiting for `activate_at`, `null` if none |
 | `drift_ms` | last measured playback position minus target position, in ms (`null` when not playing) |
-| `network` | `ethernet` \| `wifi` |
+| `network` | `ethernet` \| `wifi` (`null` if neither is up) |
+| `agent_version` | player release: the git tag, `v` included (`v1.2.3`); `dev` or `dev-<git describe>` for a build that is not a tagged release |
+| `ip` | local IPv4 address the Pi routes to the CMS from (`null` if unknown) |
 
 The CMS uses it as "online" (last seen) and as the stored version for group activation:
-`pending_version` if set, else `version`. `drift_ms`, `uptime`, `ip` and `network` are diagnostics
-(the CMS may ignore them). Unknown fields are ignored.
+`pending_version` if set, else `version`. It also stores `agent_version`, `ip` and `network` to show
+in the beheer (an invalid value is ignored, never an error), and clears an asked update (manifest
+`update`) once `agent_version` equals its `version`; `drift_ms` and `uptime` are diagnostics
+the CMS may ignore. Unknown fields are ignored.
+
+`agent_version` comes from `pi_player/VERSION`, written by `install.sh`: `PI_PLAYER_VERSION` (the
+image build passes its `VERSION`, the release tag on a tag push), else a `VERSION` file already in
+the source, else the exact `v*` tag of a git checkout, else `dev-<git describe>`, else `dev`.
 
 ## 5. Error handling summary
 
@@ -220,6 +230,7 @@ The CMS uses it as "online" (last seen) and as the stored version for group acti
 | HTTP `401` (manifest or heartbeat) | delete token -> `PAIRING` |
 | manifest `204` | `WAITING` |
 | network errors | keep current state/video; retry with backoff; offline > `offline_timeout` while playing -> `WIFI_SETUP` |
+| "offline" | NetworkManager not connected (hotspot excluded), or `GET <CMS>/up` gets no HTTP answer (DNS/connect/TLS/timeout; any status code counts as reachable) twice in a row. Probed every 30 s while it answers. A wifi without internet is offline. |
 | sha256 mismatch / download error | discard temp file, keep old video, retry on next manifest fetch |
 
 ## 6. Bel (WebSocket signal)
@@ -270,3 +281,40 @@ Pi                                                 Reverb                  CMS
 
 Bels coalesce: a bel while a manifest fetch (or download) runs gives one more fetch after it,
 never two fetches at once.
+
+## 7. Updater ("Speler bijwerken")
+
+`pi_player/updater.py`. The CMS only asks (manifest `update`, section 3.1); the Pi does the rest:
+
+1. The agent (thread `Updater`, every 10 s) takes `update` from the last manifest. It acts only if
+   `update.version` differs from its own `agent_version` and `update.url` starts with
+   `https://github.com/zekerzichtbaar/zz-narrowcasting-player/` (config `update_url_prefix` for a
+   fork): a compromised CMS cannot hand the Pi other code. No own signing (https + GitHub).
+2. It copies the running code to `/opt/pi-player/prev/pi_player` (plus the unit file to
+   `prev/pi-player.service`) and starts the runner from that copy as a transient systemd unit:
+   `systemd-run --unit pi-player-update ... python3 -m pi_player.updater apply <version> <url>`.
+   The runner is the **old** code in its own unit, so it survives the restart of `pi-player.service`
+   and the fallback never depends on the new release.
+3. The runner downloads the tarball (max 100 MB), unpacks it safely (plain files and directories,
+   nothing outside the temp dir, one top directory with `install.sh` and `pi_player/`) and runs that
+   release's `install.sh` with `PI_PLAYER_VERSION=<update.version>` (a GitHub tarball has no git).
+   `install.sh` keeps `/etc/pi-player/config.toml` and `/var/lib/pi-player` (token, videos,
+   `state.json`) and restarts `pi-player.service`; the content plays on from `current.mp4`.
+4. Success = the new agent's first heartbeat answered `2xx`: it writes
+   `/var/lib/pi-player/alive.json` `{"version", "at"}`. The runner waits up to **5 minutes** for an
+   `alive.json` with the new version, written after `install.sh` started.
+5. `install.sh` failing or no such heartbeat in time (the new agent crashes, hangs, or cannot reach
+   the CMS) = rollback: `prev/pi_player` and the unit file go back, `systemctl daemon-reload` and a
+   restart of `pi-player.service`. The old agent then reports its old `agent_version` again.
+   A failed download changes nothing and restarts nothing.
+
+`/var/lib/pi-player/update.json` = `{"version", "status": "running"|"done"|"failed", "from", "at",
+"reason"}`. One update at a time (a `running` status younger than 45 minutes blocks the next; older
+= the runner died, e.g. a reboot during the update). A `failed` version is not tried again while
+the CMS keeps asking for it (the beheer keeps showing "Wordt bijgewerkt"); a different version is.
+To retry the same version by hand: `sudo rm /var/lib/pi-player/update.json`. Logs:
+`journalctl -u pi-player-update`.
+
+No reboot: `install.sh` never reboots; when a release changes the kernel cmdline (console, HDMI
+mode) that takes effect at the next reboot. The first updater gets onto a Pi by hand (`install.sh`
+over SSH or a new image); a player without it ignores `update` and keeps playing.
