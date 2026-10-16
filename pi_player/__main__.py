@@ -14,7 +14,7 @@ import tempfile
 import time
 
 from . import __version__, bell, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
-from .gst import Display, DisplayError, to_rotation
+from .gst import Display, DisplayError, quiet_console, to_rotation
 
 log = logging.getLogger("pi-player")
 
@@ -171,6 +171,8 @@ class Agent:
 
 
 def run(cfg):
+    if cfg["video_sink"].startswith("kmssink"):  # we own the HDMI console
+        quiet_console()
     display = Display(cfg["video_sink"], cfg["gl_sink"], cfg["rotate_method"])
 
     def stop(*_):

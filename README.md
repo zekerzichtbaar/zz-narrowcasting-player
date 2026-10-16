@@ -126,6 +126,10 @@ with `Restart=always`, `RestartSec=2` and `StartLimitIntervalSec=0`. If the vide
 exits, and if the agent dies or is killed, systemd starts it again within about 2 seconds. It
 never gives up, and on restart it shows whatever state is correct at that moment.
 
+The screens (pairing, waiting, wifi setup, identify) share one pipeline that stays up, so going from
+screen to screen never shows the console. At startup the agent puts tty1 in graphics mode and wipes the
+framebuffer: the short moment between a screen and the video (or a restart) is black, not a terminal.
+
 ## 2. First-time setup on the screen
 
 At any moment the screen shows exactly one of these four states:

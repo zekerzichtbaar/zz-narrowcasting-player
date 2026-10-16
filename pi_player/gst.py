@@ -1,10 +1,14 @@
 """Everything on HDMI goes through GStreamer: the looping video and the setup-screen PNGs.
 
-One pipeline at a time owns the screen. The video pipeline runs on the system realtime clock
-(chrony keeps it equal on every Pi) with a base time chosen so that media position p plays at
-epoch + p (see sync.py). It loops with non-flushing segment seeks: no gap, no stall and no
-re-sync at the loop boundary.
+One pipeline at a time owns the screen. The screen pipeline stays up from one PNG to the next
+(appsrc), so changing screens never leaves HDMI empty; only screen <-> video swaps pipelines, and
+quiet_console() makes that moment black instead of the tty1 console.
+
+The video pipeline runs on the system realtime clock (chrony keeps it equal on every Pi) with a
+base time chosen so that media position p plays at epoch + p (see sync.py). It loops with
+non-flushing segment seeks: no gap, no stall and no re-sync at the loop boundary.
 """
+import fcntl
 import logging
 import os
 import re
@@ -29,6 +33,31 @@ QUEUE = "queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0"
 # and glimagesink shows them via GBM/KMS. If GL is missing or does not preroll: videoflip on the CPU
 # (a 1080p25 transpose, roughly a third of one core; only rotated screens pay it).
 FLIP = {90: "90l", 270: "90r"}
+STILL_SRC = "appsrc name=src is-live=true do-timestamp=true format=time caps=image/png"
+KDSETMODE, KD_GRAPHICS = 0x4B3A, 0x01  # linux/kd.h
+
+
+def quiet_console(tty="/dev/tty1", fb="fb0"):
+    """While no pipeline owns HDMI (between two of them, or while the agent restarts) the kernel
+    shows its framebuffer console. Graphics mode stops it drawing text there and the wiped
+    framebuffer is black, so that moment is black instead of a terminal. Best effort: the VT keeps
+    the mode until systemd disallocates it when the service stops."""
+    try:
+        fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+        try:
+            fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)
+        finally:
+            os.close(fd)
+        sysfs = f"/sys/class/graphics/{fb}/"
+        with open(sysfs + "virtual_size") as f:
+            w, h = (int(v) for v in f.read().split(","))
+        with open(sysfs + "bits_per_pixel") as f:
+            bpp = int(f.read())
+        with open(f"/dev/{fb}", "wb", buffering=0) as f:
+            f.write(bytes(w * h * bpp // 8))
+        log.info("console: tty1 in graphics mode, %s wiped", fb)
+    except (OSError, ValueError) as e:
+        log.warning("console: cannot blank tty1 (%s)", e)
 
 
 def to_rotation(value):
@@ -80,6 +109,7 @@ class Display:
         self.clock = G.SystemClock.obtain()
         self.clock.set_property("clock-type", G.ClockType.REALTIME)  # clock time == time.time_ns()
         self.pipe = None
+        self.still = False  # self.pipe is the screen pipeline (show_image)
         self.error = None
         self.epoch = self.duration = None  # ns, while a video plays
         self._offset = None  # pts - running time of the frames reaching the sink
@@ -90,14 +120,16 @@ class Display:
 
     def close(self):
         p, self.pipe = self.pipe, None
+        self.still = False
         self.epoch = self.duration = None
         if p:
             p.set_state(Gst.State.NULL)
 
-    def _new(self, desc, location, sink=None):
+    def _new(self, desc, location=None, sink=None, src="filesrc name=src"):
         self.close()
-        p = Gst.parse_launch(f"filesrc name=src ! {desc} ! {sink or self.sink} name=vsink")
-        p.get_by_name("src").set_property("location", location)
+        p = Gst.parse_launch(f"{src} ! {desc} ! {sink or self.sink} name=vsink")
+        if location:
+            p.get_by_name("src").set_property("location", location)
         p.use_clock(self.clock)
         self.pipe = p
         threading.Thread(target=self._watch, args=(p,), daemon=True).start()
@@ -131,8 +163,18 @@ class Display:
             raise DisplayError(f"stuck going to {st.value_nick} ({r.value_nick}): {self.error}")
 
     def show_image(self, path):
-        """Put a PNG on screen; the prerolled frame stays up while PAUSED."""
-        self._state(self._new("pngdec ! videoconvert", path), Gst.State.PAUSED)
+        """Put a PNG on screen. The screen pipeline stays up and only gets the next PNG (the sink
+        keeps the last frame), so going from screen to screen never shows the console."""
+        with open(path, "rb") as f:
+            data = f.read()
+        if not self.still:
+            p = self._new("pngdec ! videoconvert", src=STILL_SRC)
+            if p.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:  # live: no preroll
+                raise DisplayError(f"cannot show screens: {self.error}")
+            self.still = True
+        r = self.pipe.get_by_name("src").emit("push-buffer", Gst.Buffer.new_wrapped(data))
+        if r != Gst.FlowReturn.OK:
+            raise DisplayError(f"screen not accepted ({r.value_nick}): {self.error}")
 
     def play(self, video, epoch, rotation=0):
         """Start the looping video on the group clock, turned for a panel hung at `rotation`.
@@ -257,6 +299,38 @@ def _selfcheck():
                 size = (st.get_value("width"), st.get_value("height"))
                 assert size == ((192, 108) if rot == 0 else (108, 192)), (rot, size)
             print(f"  rotation {rot} gl={gl}: ok")
+    # screens: every PNG goes through the same pipeline and reaches the sink
+    import struct
+    import tempfile
+    import zlib
+
+    def png(rgb):
+        def chunk(t, b):
+            return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b))
+        rows = b"".join(b"\0" + bytes(rgb) * 16 for _ in range(9))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 9, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+    def shown():
+        sample = d.pipe.get_by_name("vsink").get_property("last-sample")
+        return sample and sample.get_buffer().extract_dup(0, 3)
+
+    d = Display(sink="fakesink", gl_sink="fakesink", rotate_method="cpu")
+    with tempfile.TemporaryDirectory() as tmp:
+        first = None
+        for i, rgb in enumerate(((255, 0, 0), (0, 0, 255), (0, 255, 0))):
+            path = os.path.join(tmp, f"{i}.png")
+            with open(path, "wb") as f:
+                f.write(png(rgb))
+            d.show_image(path)
+            first = first or d.pipe
+            deadline = time.monotonic() + 5
+            while shown() != bytes(rgb) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert shown() == bytes(rgb), (rgb, shown(), d.error)
+            assert d.pipe is first and d.alive()
+    d.close()
+    print("  screens: one pipeline, every PNG shown")
     print("gst self-check OK")
 
 
