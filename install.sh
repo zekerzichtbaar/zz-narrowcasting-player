@@ -167,6 +167,11 @@ else
     sed -i 's/^manifest_poll = 300$/manifest_poll = 30/' "$ETC/config.toml"
     echo "    manifest_poll 300 -> 30 (HTTP protocol)"
   fi
+  # GPU rotation froze and showed wrong colours on a real Pi 4: the old default "gl" becomes "cpu".
+  if grep -q '^rotate_method = "gl"$' "$ETC/config.toml"; then
+    sed -i 's/^rotate_method = "gl"$/rotate_method = "cpu"/' "$ETC/config.toml"
+    echo "    rotate_method gl -> cpu (GPU rotation broken on the Pi 4)"
+  fi
 fi
 install -d -m 0700 "$STATE"
 

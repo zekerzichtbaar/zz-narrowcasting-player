@@ -213,7 +213,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
 | `display_mode` | `"1920x1080@60"` | HDMI mode, set on the kernel cmdline by `install.sh` (re-run + reboot after changing). Smoothest when the refresh is a multiple of the fps: `@60` for 30 fps, `@50` for 25 fps. Many PC monitors reject `@50` ("Out of range"); TVs accept both. Empty = leave the cmdline alone. |
 | `video_sink` | `"kmssink"` | GStreamer sink, plus properties (e.g. `"kmssink connector-id=32"` with two HDMI outputs). Dev machine: `"autovideosink"`. |
-| `rotate_method` | `"gl"` | Screens hung upright (manifest `rotation` 90/270): `"gl"` turns the video on the GPU (`glupload ! glcolorconvert ! glvideoflip` into `gl_sink`), `"cpu"` with `videoflip`. GL that is missing or fails to start falls back to `"cpu"` by itself. The Pi 4 display itself cannot turn a plane 90 degrees (vc4 only flips), so KMS rotation is not an option. |
+| `rotate_method` | `"cpu"` | Screens hung upright (manifest `rotation` 90/270): `"cpu"` turns the video with `videoflip`, `"gl"` on the GPU (`glupload ! glcolorconvert ! glvideoflip` into `gl_sink`). GL froze on the first frame and showed wrong colours on a real Pi 4, so it is opt-in; `install.sh` turns an old `"gl"` into `"cpu"`. GL that is missing or fails to start falls back to `"cpu"` by itself. The Pi 4 display itself cannot turn a plane 90 degrees (vc4 only flips), so KMS rotation is not an option. |
 | `gl_sink` | `"glimagesink"` | Sink for GPU-turned video (GBM/KMS on the console; the agent sets `GST_GL_WINDOW=gbm` when there is no X/Wayland). |
 | `rotation` | `0` | Only without content updates (dev, `--video`): how the panel hangs. Otherwise the CMS decides via the manifest. |
 | `update_url_prefix` | GitHub repo | Player updates ("Speler bijwerken") are only installed from a URL starting with this (default `https://github.com/zekerzichtbaar/zz-narrowcasting-player/`). See `docs/protocol.md` section 7. |
@@ -353,10 +353,10 @@ Run `sudo systemctl kill pi-player`: playback should be back within
    publish a portrait video (`&orientation=portrait`). Within a few seconds the video restarts
    upright, without downloading again; the setup, waiting and identify screens are upright too.
 2. `journalctl -u pi-player -f` shows `rotation 0 -> 90` and `playing ... rotation 90`. A line
-   `GPU rotation failed ... turning on the CPU` means GL did not start (check `gstreamer1.0-gl`).
+   `GPU rotation failed ... turning on the CPU` means GL did not start (only with `rotate_method = "gl"`).
 3. Measure: the once-a-minute `frames this loop` line should show no growing `dropped`, and
    `top` should leave headroom for the agent. Film it like the sync test: still within 1 frame
-   of a landscape neighbour in the same group. If GL stutters, try `rotate_method = "cpu"`.
+   of a landscape neighbour in the same group.
 
 ## 9. Troubleshooting
 

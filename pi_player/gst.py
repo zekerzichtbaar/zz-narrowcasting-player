@@ -29,9 +29,10 @@ QUEUE = "queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0"
 # Rotation (CMS `screens.rotation`) = how the panel hangs, turned clockwise. The picture turns back
 # the other way (same as the Chromium player's CSS rotate(-rotation)): 90 -> 90 degrees counter-clockwise.
 # The Pi 4 display (vc4 HVS) can only flip planes, not turn them 90 degrees, so KMS plane rotation
-# is out. First choice is the GPU: decoded frames go into GL (dmabuf import), glvideoflip turns them
-# and glimagesink shows them via GBM/KMS. If GL is missing or does not preroll: videoflip on the CPU
-# (a 1080p25 transpose, roughly a third of one core; only rotated screens pay it).
+# is out. Default is videoflip on the CPU (a 1080p25 transpose, roughly a third of one core; only
+# rotated screens pay it). rotate_method "gl" puts decoded frames into GL (dmabuf import), turns them
+# with glvideoflip and shows them via glimagesink on GBM/KMS; on a real Pi 4 that froze on the first
+# frame and showed wrong colours (v0.7.2), so it is opt-in. GL that does not preroll falls back to the CPU.
 FLIP = {90: "90l", 270: "90r"}
 STILL_SRC = "appsrc name=src is-live=true do-timestamp=true format=time caps=image/png"
 KDSETMODE, KD_GRAPHICS = 0x4B3A, 0x01  # linux/kd.h
@@ -100,7 +101,7 @@ def _gst():
 
 
 class Display:
-    def __init__(self, sink="kmssink", gl_sink="glimagesink", rotate_method="gl"):
+    def __init__(self, sink="kmssink", gl_sink="glimagesink", rotate_method="cpu"):
         G = _gst()
         self.sink, self.gl_sink = sink, gl_sink
         # GPU rotation unless configured off or the GL elements are not installed
