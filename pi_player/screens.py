@@ -91,21 +91,51 @@ def _sprite(img, x, y, size, paint, k=4):
     img.paste(small, (int(x), int(y)), small)
 
 
+ZZ_PINK = (255, 0, 128)
+ZZ_LOGO = os.path.join(os.path.dirname(__file__), "zz-logo.png")  # CMS zeker-zichtbaar-credit.tsx
+
+
 def _mark(img, x, y, size):
-    """The monitor mark (canvas logo): a green rounded square with a monitor outline."""
+    """The Narrowcasting mark (CMS app-logo-icon.tsx / favicon.svg): a green rounded square with a
+    screen playing and a Zeker Zichtbaar pink live dot."""
     def paint(d, k):
         s = size * k
-        u = s * 0.53 / 24
-        o = (s - 24 * u) / 2
-        w = max(1, round(2.2 * u))
+        t = s * 0.6 / 32  # the CMS icon: its 32-unit drawing at 60 % of the tile, centred
+        o = (s - 32 * t) / 2
 
         def p(a, b):
-            return o + a * u, o + b * u
+            return o + (a - 4) * t, o + (b - 4.5) * t
+        w = max(1, round(3 * t))
         d.rounded_rectangle([0, 0, s - 1, s - 1], radius=s * 0.195, fill=ACCENT)
-        d.rounded_rectangle([*p(2, 3), *p(22, 17)], radius=2 * u, outline=ON_ACCENT, width=w)
-        d.line([p(8, 21), p(16, 21)], fill=ON_ACCENT, width=w)
-        d.line([p(12, 17), p(12, 21)], fill=ON_ACCENT, width=w)
+        d.rounded_rectangle([*p(6, 9), *p(34, 27.5)], radius=3.5 * t, outline=ON_ACCENT, width=w)
+        d.line([p(14.5, 32.5), p(25.5, 32.5)], fill=ON_ACCENT, width=w)
+        for end in (p(14.5, 32.5), p(25.5, 32.5)):  # round line caps
+            d.ellipse([end[0] - w / 2, end[1] - w / 2, end[0] + w / 2, end[1] + w / 2], fill=ON_ACCENT)
+        d.polygon([p(17.5, 14.25), p(17.5, 22.25), p(24, 18.25)], fill=ON_ACCENT)
+        cx, cy = p(33, 10)
+        ring, dot = 5.75 * t, 4.5 * t
+        d.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], fill=ACCENT)
+        d.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=ZZ_PINK)
     _sprite(img, x, y, (size, size), paint)
+
+
+def _zz(img, d, x, y, size, fill, right=False):
+    """"Zeker Zichtbaar" with the house logo (the pink blob), vertically centred on y; from x, or
+    ending at x with right=True. size = the text size, the blob is 1.5 times as high."""
+    from PIL import Image
+    font = _font(size, "display")
+    h = round(size * 1.5)
+    tw = d.textlength("Zeker Zichtbaar", font=font)
+    try:
+        with Image.open(ZZ_LOGO) as lg:
+            lg = lg.convert("RGBA").resize((round(h * lg.width / lg.height), h), Image.LANCZOS)
+    except OSError:
+        lg = None  # missing file: only the name
+    lw = lg.width + round(size * 0.6) if lg else 0
+    left = x - lw - tw if right else x
+    if lg:
+        img.paste(lg, (int(left), int(y - h / 2)), lg)
+    _text(d, (left + lw, y), "Zeker Zichtbaar", size, fill, "display", "lm")
 
 
 def _canvas(portrait=False, glow=True):
@@ -207,7 +237,7 @@ def _notice(img, footer, logo, title, kicker=None, text=None, note=None, busy=Fa
         y += height + gap
     _tiles(d, w, h)
     if not _logo(img, logo):
-        _text(d, (72, 60), "Zeker Zichtbaar", 27, (200, 202, 204), "display", "lt")
+        _zz(img, d, 72, 74, 27, (200, 202, 204))
     if footer:
         _text(d, (w - 72, 63), footer.upper(), 21, DIM, "mono", "rt", fit=w // 2, track=0.08)
     return img
@@ -246,7 +276,7 @@ def _head(img, d, logo, status, warn=False):
     """Two-column screens: brand top left, connection status top right."""
     if not _logo(img, logo):
         _mark(img, 120, 96, 66)
-        _text(d, (207, 129), "Zeker Zichtbaar", 33, FG, "display", "lm")
+        _text(d, (207, 129), "Narrowcasting", 33, FG, "display", "lm")
     dot = WARN if warn else ACCENT
     w = _text(d, (W - 120, 129), status, 23, MUTED, "mono", "rm", track=0.08)
     d.ellipse([W - 120 - w - 30, 122, W - 120 - w - 16, 136], fill=dot)
@@ -259,9 +289,11 @@ def _step(d, x, y, n, s):
     _text(d, (x + 78, y), s, 33, SOFT, anchor="lm", fit=W - 120 - 450 - 108 - x - 78)
 
 
-def _foot(d, footer):
+def _foot(img, d, footer):
+    """Footer text bottom left, Zeker Zichtbaar bottom right (two-column screens)."""
     if footer:
-        _text(d, (120, H - 48), footer.upper(), 20, DIM, "mono", "ls", fit=W - 240, track=0.08)
+        _text(d, (120, H - 48), footer.upper(), 20, DIM, "mono", "ls", fit=W - 640, track=0.08)
+    _zz(img, d, W - 120, H - 60, 24, (200, 202, 204), right=True)
 
 
 def portrait(rotation):
@@ -318,7 +350,7 @@ def pairing(path, code=None, pair_url=None, expires_at=None, footer="", logo=Non
         qx, qy = W - 120 - 450, 222 + (762 - 507) // 2
         _qr(img, pair_url, qx, qy, 450)
         _text(d, (qx + 225, qy + 450 + 27), "Of scan met je telefoon", 27, SOFT, anchor="mt")
-    _foot(d, footer)
+    _foot(img, d, footer)
     return _save(img, path, rotation)
 
 
@@ -396,7 +428,7 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
     qx, qy = W - 120 - 480, 222 + (762 - 537) // 2
     _qr(img, wifi_qr(ssid, password), qx, qy, 480)
     _text(d, (qx + 240, qy + 480 + 27), "Scan om te verbinden", 27, SOFT, anchor="mt")
-    _foot(d, footer)
+    _foot(img, d, footer)
     return _save(img, path, rotation)
 
 
@@ -416,6 +448,7 @@ def _selfcheck():
     assert out.size == (W, H) and out.getpixel((W // 2, H // 2)) == red and out.getpixel((10, H // 2)) == BG
     for kind in FONTS:  # the bundled fonts load, not the DejaVu fallback
         assert _font(20, kind).getname()[0] != "DejaVu Sans", kind
+    assert os.path.exists(ZZ_LOGO), ZZ_LOGO
     print("screens self-check OK")
 
 
