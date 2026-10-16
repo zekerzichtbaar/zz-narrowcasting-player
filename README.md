@@ -108,7 +108,7 @@ sudo reboot                           # once, so the kernel console text disappe
 
 `install.sh` does the following:
 
-- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav gstreamer1.0-gl`). It uses no pip and no venv.
+- Installs the apt packages: `chrony python3 python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base` (DejaVu only as a fallback: the setup screens use the fonts in `pi_player/fonts/`, same look as the CMS player) and GStreamer (`python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-{base,good,bad} gstreamer1.0-libav gstreamer1.0-gl`). It uses no pip and no venv.
 - Copies the agent to `/opt/pi-player` and installs the `pi-player` command in `/usr/local/bin`.
 - Writes `/etc/pi-player/config.toml` on the first run only. Later runs keep your edits.
 - Creates `/var/lib/pi-player/` (mode 0700) for the token, the videos and `state.json`.
@@ -192,7 +192,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `offline_timeout` | `600` | Network lost while playing: keep playing this many seconds, then show wifi setup. |
 | `wifi_retry` | `120` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
 | `ntp_server` | `""` | chrony time source. Empty = the distro's internet pool. See [section 5](#5-time-sync-ntp). |
-| `logo` | `"/etc/pi-player/logo.png"` | Optional PNG shown top-left on the setup screens (max 360x140). If the file is missing, no logo is shown. |
+| `logo` | `"/etc/pi-player/logo.png"` | Optional PNG shown top-left on the setup screens (max 360x140), instead of the Zeker Zichtbaar brand. If the file is missing, the brand shows. |
 | `state_dir` | `"/var/lib/pi-player"` | Token, `current.mp4`, `next.mp4`, `state.json`. |
 | `video` | `""` | Video to play. Empty = `<state_dir>/current.mp4`. |
 | `epoch` | `0` | Sync reference: frame 0 plays at `epoch + k*duration` (Unix seconds). The manifest's `epoch` overrides it. |
@@ -285,6 +285,12 @@ python3 -m pi_player.screens check            # setup screens turned for a rotat
 python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNGs to look at
 python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
 ```
+
+The setup screens copy the look of the CMS Chromium player (`resources/css/player.css`, house style
+"Samen": colours, Geist / Geist Mono / Bricolage Grotesque from `pi_player/fonts/`, layout), as a still
+frame since a PNG cannot animate. Change the player style in the CMS, change `screens.py` with it.
+Rendering the PNGs needs Pillow and qrcode; on a Mac without them:
+`python3.13 -m venv /tmp/pp && /tmp/pp/bin/pip install pillow qrcode`, then use `/tmp/pp/bin/python`.
 
 ## 8. Hardware test plan
 

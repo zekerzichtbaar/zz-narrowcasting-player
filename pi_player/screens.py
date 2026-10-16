@@ -1,5 +1,10 @@
 """Setup screens rendered as 1920x1080 PNGs (Pillow + qrcode), shown on HDMI by gst.Display.
 
+Same look as the Chromium player's tv screens (CMS `resources/css/player.css`, house style "Samen"):
+dark, green accent, Bricolage Grotesque / Geist / Geist Mono (OFL, bundled in `fonts/`). Sizes are
+the CSS cqmin values times 10.8 (1080 px short side). A PNG cannot move, so the animations are drawn
+as their reduced-motion still frame.
+
 On a panel hung at 90/270 (CMS `screens.rotation`, clockwise) the screen is laid out upright as
 1080x1920 and the PNG is turned back counter-clockwise, so kmssink still gets 1920x1080. Centred
 screens (identify, waiting, connecting, no network) are drawn natively in portrait; the two-column
@@ -7,78 +12,256 @@ ones (pairing code + QR, wifi setup) are drawn landscape and scaled into the por
 
 Preview: python3 -m pi_player.screens OUT_DIR
 """
+import functools
 import os
 import time
+from urllib.parse import urlparse
 
 W, H = 1920, 1080
-BG, FG, MUTED, ACCENT = (18, 20, 24), (240, 240, 240), (150, 155, 165), (255, 196, 0)
-ERROR = (255, 110, 100)
+BG, FG, SOFT, MUTED = (7, 8, 10), (242, 244, 246), (201, 209, 219), (163, 171, 183)
+DIM, LINE, ACCENT, ON_ACCENT = (107, 115, 128), (58, 65, 76), (61, 220, 132), (4, 32, 14)
+WARN, ERROR = (245, 184, 61), (255, 110, 100)
 
-FONT_DIRS = ["/usr/share/fonts/truetype/dejavu", "/Library/Fonts", "/System/Library/Fonts/Supplemental"]
-FONTS = {False: ["DejaVuSans.ttf", "Arial.ttf"], True: ["DejaVuSans-Bold.ttf", "Arial Bold.ttf"]}
+FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+FONTS = {
+    "sans": "Geist-Regular.ttf",
+    "semi": "Geist-SemiBold.ttf",
+    "display": "BricolageGrotesque-Bold.ttf",
+    "mono": "GeistMono-Medium.ttf",
+}
+FALLBACK = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-def _font(size, bold=False):
+@functools.lru_cache(maxsize=64)
+def _font(size, kind="sans"):
     from PIL import ImageFont
-    for d in FONT_DIRS:
-        for name in FONTS[bold]:
-            p = os.path.join(d, name)
-            if os.path.exists(p):
-                return ImageFont.truetype(p, size)
+    for p in (os.path.join(FONT_DIR, FONTS[kind]), FALLBACK):
+        if os.path.exists(p):
+            return ImageFont.truetype(p, size)
     try:
         return ImageFont.load_default(size=size)  # Pillow >= 10.1
     except TypeError:
         return ImageFont.load_default()
 
 
-def _qr(img, data, x, y, size):
-    """Draw a QR code for data into img, size x size px, top-left at (x, y). Uses the module
-    matrix directly so it works across qrcode versions (Bookworm ships 7.4)."""
-    import qrcode
-    from PIL import ImageDraw
-    q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
-    q.add_data(data)
-    q.make(fit=True)
-    m = q.get_matrix()
-    cell = size // len(m)
-    size = cell * len(m)
-    d = ImageDraw.Draw(img)
-    d.rectangle([x, y, x + size - 1, y + size - 1], fill=(255, 255, 255))
-    for r, row in enumerate(m):
-        for c, on in enumerate(row):
-            if on:
-                d.rectangle([x + c * cell, y + r * cell, x + (c + 1) * cell - 1, y + (r + 1) * cell - 1],
-                            fill=(0, 0, 0))
-    return size
+def _text(d, xy, s, size, fill=FG, kind="sans", anchor="la", fit=None, track=0.0):
+    """Draw s, returns its width. fit: max width in px, the font shrinks until the text fits (long
+    screen names in portrait). track: letter spacing in em, like CSS. fill may be a function of the
+    character (the green dash in a pairing code)."""
+    font = _font(size, kind)
+
+    def width():
+        return d.textlength(s, font=font) + track * size * max(0, len(s) - 1)
+
+    while fit and size > 12 and width() > fit:
+        size = int(size * 0.9)
+        font = _font(size, kind)
+    w = width()
+    if not track and not callable(fill):
+        d.text(xy, s, font=font, fill=fill, anchor=anchor)
+        return w
+    x, y = xy
+    x -= {"l": 0, "m": w / 2, "r": w}[anchor[0]]
+    # One baseline for the whole string: per character, "lm" or "lt" would shift each glyph.
+    y += d.textbbox((0, 0), s, font=font, anchor="l" + anchor[1])[1] - d.textbbox((0, 0), s, font=font, anchor="ls")[1]
+    for ch in s:
+        d.text((x, y), ch, font=font, fill=fill(ch) if callable(fill) else fill, anchor="ls")
+        x += d.textlength(ch, font=font) + track * size
+    return w
 
 
-def _canvas(logo, portrait=False):
+def _wrap(d, s, size, kind, max_w):
+    lines, line = [], ""
+    for word in s.split():
+        test = (line + " " + word).strip()
+        if line and d.textlength(test, font=_font(size, kind)) > max_w:
+            lines.append(line)
+            line = word
+        else:
+            line = test
+    return lines + [line] if line else lines
+
+
+def _sprite(img, x, y, size, paint, k=4):
+    """Antialiased shapes: paint(draw, k) draws at k times the size, pasted downsampled at (x, y)."""
+    from PIL import Image, ImageDraw
+    big = Image.new("RGBA", (size[0] * k, size[1] * k), (0, 0, 0, 0))
+    paint(ImageDraw.Draw(big), k)
+    small = big.resize(size, Image.LANCZOS)
+    img.paste(small, (int(x), int(y)), small)
+
+
+def _mark(img, x, y, size):
+    """The monitor mark (canvas logo): a green rounded square with a monitor outline."""
+    def paint(d, k):
+        s = size * k
+        u = s * 0.53 / 24
+        o = (s - 24 * u) / 2
+        w = max(1, round(2.2 * u))
+
+        def p(a, b):
+            return o + a * u, o + b * u
+        d.rounded_rectangle([0, 0, s - 1, s - 1], radius=s * 0.195, fill=ACCENT)
+        d.rounded_rectangle([*p(2, 3), *p(22, 17)], radius=2 * u, outline=ON_ACCENT, width=w)
+        d.line([p(8, 21), p(16, 21)], fill=ON_ACCENT, width=w)
+        d.line([p(12, 17), p(12, 21)], fill=ON_ACCENT, width=w)
+    _sprite(img, x, y, (size, size), paint)
+
+
+def _canvas(portrait=False, glow=True):
+    """Dark background with the two soft blobs (green top left, blue bottom right)."""
     from PIL import Image
-    img = Image.new("RGB", (H, W) if portrait else (W, H), BG)
-    if logo and os.path.exists(logo):
-        try:
-            with Image.open(logo) as lg:
-                lg = lg.convert("RGBA")
-                lg.thumbnail((360, 140))
-                img.paste(lg, (80, 70), lg)
-        except OSError:
-            pass  # broken logo file: just leave it out
+    w, h = (H, W) if portrait else (W, H)
+    img = Image.new("RGB", (w, h), BG)
+    if not glow:
+        return img
+    # radial_gradient: 0 in the centre, 255 at the edge; the CSS gradients fade out at 65 %.
+    for (cx, cy, r, color, alpha) in ((0.1 * w, 0.05 * h, 570, ACCENT, 0.3),
+                                      (w - 0.17 * w, h + 0.03 * h, 615, (37, 70, 240), 0.28)):
+        mask = Image.radial_gradient("L").point(lambda v: int(255 * alpha * max(0.0, 1 - v / 166)))
+        mask = mask.resize((2 * r, 2 * r), Image.BILINEAR)
+        full = Image.new("L", (w, h), 0)
+        full.paste(mask, (int(cx - r), int(cy - r)))
+        img.paste(color, mask=full)
     return img
 
 
-def _text(d, xy, s, size, fill=FG, bold=False, anchor="la", fit=None):
-    """fit: max width in px; the font shrinks until the text fits (long screen names in portrait)."""
-    font = _font(size, bold)
-    while fit and size > 12 and d.textlength(s, font=font) > fit:
-        size = int(size * 0.9)
-        font = _font(size, bold)
-    d.text(xy, s, font=font, fill=fill, anchor=anchor)
+def _logo(img, logo):
+    """Customer logo (config `logo`) top left; False when there is none, then the brand shows."""
+    from PIL import Image
+    if not (logo and os.path.exists(logo)):
+        return False
+    try:
+        with Image.open(logo) as lg:
+            lg = lg.convert("RGBA")
+            lg.thumbnail((360, 140))
+            img.paste(lg, (72, 56), lg)
+        return True
+    except OSError:
+        return False  # broken logo file: the brand instead
 
 
-def _footer(d, footer):
+def _qr(img, data, x, y, size):
+    """A white rounded card of size x size px at (x, y) with a QR code for data. Uses the module
+    matrix directly so it works across qrcode versions (Bookworm ships 7.4)."""
+    import qrcode
+    from PIL import ImageDraw
+    _sprite(img, x, y, (size, size), lambda d, k: d.rounded_rectangle(
+        [0, 0, size * k - 1, size * k - 1], radius=24 * k, fill=(255, 255, 255)))
+    q = qrcode.QRCode(border=0, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    q.add_data(data)
+    q.make(fit=True)
+    m = q.get_matrix()
+    inner = size - 2 * 32
+    cell = inner // len(m)
+    ox = x + (size - cell * len(m)) // 2
+    oy = y + (size - cell * len(m)) // 2
+    d = ImageDraw.Draw(img)
+    for r, row in enumerate(m):
+        for c, on in enumerate(row):
+            if on:
+                d.rectangle([ox + c * cell, oy + r * cell, ox + (c + 1) * cell - 1, oy + (r + 1) * cell - 1],
+                            fill=(0, 0, 0))
+
+
+def _dots(d, x, y):
+    """Three dots, "still busy" (still frame of the blinking dots)."""
+    for i, a in enumerate((0.35, 0.65, 1.0)):
+        cx = x + i * 16.5
+        d.ellipse([cx, y - 4.5, cx + 9, y + 4.5], fill=MUTED + (int(255 * a),))
+
+
+def _notice(img, footer, logo, title, kicker=None, text=None, note=None, busy=False, warn=False):
+    """Full-screen message (canvas "Tv - Rustscherm"): beacon, kicker, title, text, note, with the
+    tiles and scan line at the bottom and the brand and footer in the corners."""
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img, "RGBA")
+    w, h = img.size
+    cx = w // 2
+    title_size = int(min(126, 0.09 * w))
+    note_lines = _wrap(d, note, 26, "sans", min(w - 170, 1000)) if note else []
+    rows = [("beacon", 245, 30)]  # the outer ring is 1.7 x 144 px
+    if kicker:
+        rows.append(("kicker", 30, 18))
+    rows.append(("title", int(title_size * 1.1), 18))
+    if text:
+        rows.append(("text", 42, 18))
+    rows += [("note", 36, 0) for _ in note_lines]
+    y = (h - sum(r[1] + r[2] for r in rows) + rows[-1][2]) / 2
+    for kind, height, gap in rows:
+        mid = y + height / 2
+        if kind == "beacon":
+            _beacon(img, cx, mid)
+        elif kind == "kicker":
+            _text(d, (cx, mid), kicker.upper(), 24, WARN if warn else ACCENT, "mono", "mm", track=0.14)
+        elif kind == "title":
+            _text(d, (cx, mid), title, title_size, FG, "display", "mm", fit=w - 170)
+        elif kind == "text":
+            tw = d.textlength(text, font=_font(33))
+            shift = 26 if busy else 0
+            _text(d, (cx - shift, mid), text, 33, MUTED, anchor="mm")
+            if busy:
+                _dots(d, cx - shift + tw / 2 + 15, mid)
+        else:
+            _text(d, (cx, mid), note_lines.pop(0), 26, DIM, anchor="mm")
+        y += height + gap
+    _tiles(d, w, h)
+    if not _logo(img, logo):
+        _text(d, (72, 60), "Zeker Zichtbaar", 27, (200, 202, 204), "display", "lt")
     if footer:
-        w, h = d.im.size
-        _text(d, (w // 2, h - 60), footer, 26, MUTED, anchor="ms", fit=w - 80)
+        _text(d, (w - 72, 63), footer.upper(), 21, DIM, "mono", "rt", fit=w // 2, track=0.08)
+    return img
+
+
+def _beacon(img, cx, cy):
+    """The mark with two rings around it (still frame of the pulsing rings)."""
+    size = 300
+
+    def paint(d, k):
+        c = size * k / 2
+        for scale, alpha in ((1.2, 0.35), (1.7, 0.15)):
+            r = 72 * scale * k
+            d.ellipse([c - r, c - r, c + r, c + r], outline=ACCENT + (int(255 * alpha),), width=3 * k)
+    _sprite(img, cx - size / 2, cy - size / 2, (size, size), paint)
+    _mark(img, int(cx - 54), int(cy - 54), 108)
+
+
+def _tiles(d, w, h):
+    """The row of screen tiles above the bottom edge and the scan line on it."""
+    sizes = [(132, 74)] * 3 + [(45, 80)] + [(132, 74)] * 2
+    x = (w - sum(s[0] for s in sizes) - 21 * (len(sizes) - 1)) / 2
+    bottom = h - 96
+    for i, (tw, th) in enumerate(sizes):
+        alpha = 0.55 if i == 2 else 0.2
+        d.rounded_rectangle([x, bottom - th, x + tw, bottom], radius=6, fill=ACCENT + (int(255 * alpha),))
+        x += tw + 21
+    d.rectangle([0, h - 5, w, h], fill=(255, 255, 255, 15))
+    start, length = 0.3 * w, 0.4 * w
+    for i in range(int(length)):
+        a = 1 - abs(i / length * 2 - 1)
+        d.line([(start + i, h - 5), (start + i, h)], fill=ACCENT + (int(255 * a),))
+
+
+def _head(img, d, logo, status, warn=False):
+    """Two-column screens: brand top left, connection status top right."""
+    if not _logo(img, logo):
+        _mark(img, 120, 96, 66)
+        _text(d, (207, 129), "Zeker Zichtbaar", 33, FG, "display", "lm")
+    dot = WARN if warn else ACCENT
+    w = _text(d, (W - 120, 129), status, 23, MUTED, "mono", "rm", track=0.08)
+    d.ellipse([W - 120 - w - 30, 122, W - 120 - w - 16, 136], fill=dot)
+
+
+def _step(d, x, y, n, s):
+    """A numbered step: the number in a ring, then the text. y = the middle of the line."""
+    d.ellipse([x, y - 27, x + 54, y + 27], outline=LINE, width=3)
+    _text(d, (x + 27, y), str(n), 24, FG, "mono", "mm")
+    _text(d, (x + 78, y), s, 33, SOFT, anchor="lm", fit=W - 120 - 450 - 108 - x - 78)
+
+
+def _foot(d, footer):
+    if footer:
+        _text(d, (120, H - 48), footer.upper(), 20, DIM, "mono", "ls", fit=W - 240, track=0.08)
 
 
 def portrait(rotation):
@@ -108,50 +291,73 @@ def _save(img, path, rotation=0):
 
 
 def pairing(path, code=None, pair_url=None, expires_at=None, footer="", logo=None, rotation=0):
-    """Big code + QR to pair_url. code None -> 'connecting to CMS' placeholder."""
+    """Steps, big code and a QR to pair_url (canvas "Tv - Koppelen"). code None -> 'connecting'."""
     from PIL import ImageDraw
-    img = _canvas(logo, portrait(rotation) and not code)
-    d = ImageDraw.Draw(img)
-    w, h = img.size
     if not code:
-        _text(d, (w // 2, h // 2 - 20), "Connecting to the CMS…", 72, bold=True, anchor="mm", fit=w - 160)
-        _text(d, (w // 2, h // 2 + 70), "A pairing code will appear here.", 40, MUTED, anchor="mm", fit=w - 160)
-        _footer(d, footer)
+        img = _notice(_canvas(portrait(rotation)), footer, logo, "Verbinden", text="Even geduld",
+                      note="Zo verschijnt hier een koppelcode.", busy=True)
         return _save(img, path, rotation)
-    left = 160
-    _text(d, (left, 260), "Pair this screen", 80, bold=True)
-    _text(d, (left, 380), "Scan the QR code, or enter this code in the CMS:", 40, MUTED)
-    _text(d, (left - 8, 450), code, 220, ACCENT, bold=True)
+    img = _canvas()
+    d = ImageDraw.Draw(img, "RGBA")
+    _head(img, d, logo, "VERBONDEN")
+    host = urlparse(pair_url).netloc if pair_url else ""
+    y = 222 + (762 - 590) // 2
+    _text(d, (120, y), "Koppel dit scherm", 84, FG, "display", "lt")
+    y += 88 + 54 + 27
+    _step(d, 120, y, 1, f"Ga naar {host}/schermen" if host else "Ga in het beheer naar Schermen")
+    y += 54 + 27
+    _step(d, 120, y, 2, "Vul deze code in")
+    y += 27 + 54
+    _text(d, (114, y), code, 168, lambda ch: ACCENT if ch == "-" else (255, 255, 255), "mono", "lt",
+          fit=W - 120 - 450 - 108 - 120, track=0.14)
     if expires_at:
-        _text(d, (left, 740), "Code valid until " + time.strftime("%H:%M", time.localtime(expires_at))
-              + " — a new one appears automatically.", 34, MUTED)
+        until = time.strftime("%H:%M", time.localtime(expires_at))
+        _text(d, (120, y + 168 + 54), f"Geldig tot {until}, daarna verschijnt vanzelf een nieuwe code",
+              25, MUTED, "mono", "lt", fit=W - 120 - 450 - 108 - 120)
     if pair_url:
-        _text(d, (left, 800), pair_url, 30, MUTED)
-        _qr(img, pair_url, W - 160 - 560, (H - 560) // 2, 560)
-    _footer(d, footer)
+        qx, qy = W - 120 - 450, 222 + (762 - 507) // 2
+        _qr(img, pair_url, qx, qy, 450)
+        _text(d, (qx + 225, qy + 450 + 27), "Of scan met je telefoon", 27, SOFT, anchor="mt")
+    _foot(d, footer)
     return _save(img, path, rotation)
 
 
 def waiting(path, name=None, footer="", logo=None, rotation=0):
-    from PIL import ImageDraw
-    img = _canvas(logo, portrait(rotation))
-    d = ImageDraw.Draw(img)
-    w, h = img.size
-    _text(d, (w // 2, h // 2 - 30), "Waiting for content", 96, bold=True, anchor="mm", fit=w - 160)
-    _text(d, (w // 2, h // 2 + 80), name or "Paired - publish something in the CMS for this screen.",
-          48, ACCENT if name else MUTED, anchor="mm", fit=w - 160)
-    _footer(d, footer)
+    """Paired, nothing to play yet (canvas "Tv - Rustscherm")."""
+    img = _notice(_canvas(portrait(rotation)), footer, logo, name or "Gekoppeld",
+                  kicker="Gekoppeld als" if name else None, text="Wacht op een playlist",
+                  note="Kies in het beheer onder Schermen welke playlist hier draait en zorg dat hij "
+                       "gepubliceerd is.", busy=True)
     return _save(img, path, rotation)
 
 
 def identify(path, name, footer="", logo=None, rotation=0):
-    """"Scherm identificeren": the screen name, huge, so you can see which screen is which."""
+    """"Scherm identificeren": the screen name, huge, so you can see which screen is which (canvas
+    "Tv - Identificeren", without the countdown: the PNG stays until the CMS stops identifying)."""
     from PIL import ImageDraw
-    img = _canvas(logo, portrait(rotation))
+    img = _canvas(portrait(rotation), glow=False)
+    img.paste((4, 6, 8), (0, 0, *img.size))
     d = ImageDraw.Draw(img)
     w, h = img.size
-    _text(d, (w // 2, h // 2), name, 160, ACCENT, bold=True, anchor="mm", fit=w - 160)
-    _footer(d, footer)
+    cx, size = w // 2, int(min(225, 0.14 * w))
+    pill_w = 54 + 33 + 18 + d.textlength("DIT SCHERM", font=_font(27, "mono")) + 0.12 * 27 * 9
+    top = h // 2 - (66 + 42 + size) // 2
+
+    def pill(dr, k):
+        dr.rounded_rectangle([0, 0, pill_w * k - 1, 66 * k - 1], radius=33 * k, outline=ACCENT, width=3 * k)
+        ex, ey, u = 27 * k, 17 * k, 33 / 24 * k  # eye icon, 24-unit viewbox scaled to 33 px
+        r, c = 10.64 * u, 3 * u
+        dr.arc([ex + (12 * u - r), ey + 15.64 * u - r, ex + 12 * u + r, ey + 15.64 * u + r], 200, 340,
+               fill=ACCENT, width=round(2 * u))
+        dr.arc([ex + (12 * u - r), ey + 8.36 * u - r, ex + 12 * u + r, ey + 8.36 * u + r], 20, 160,
+               fill=ACCENT, width=round(2 * u))
+        dr.ellipse([ex + 12 * u - c, ey + 12 * u - c, ex + 12 * u + c, ey + 12 * u + c], outline=ACCENT,
+                   width=round(2 * u))
+    _sprite(img, cx - pill_w / 2, top, (int(pill_w), 66), pill)
+    _text(d, (cx - pill_w / 2 + 27 + 33 + 18, top + 33), "DIT SCHERM", 27, ACCENT, "mono", "lm", track=0.12)
+    _text(d, (cx, top + 66 + 42 + size / 2), name, size, (255, 255, 255), "display", "mm", fit=w - 130)
+    if footer:
+        _text(d, (cx, h - 60), footer.upper(), 21, DIM, "mono", "ms", fit=w - 160, track=0.08)
     return _save(img, path, rotation)
 
 
@@ -161,31 +367,36 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
     hotspot briefly down): show status/error, or 'connect ethernet'."""
     from PIL import ImageDraw
     from .netman import wifi_qr
-    img = _canvas(logo, portrait(rotation) and not ssid)
-    d = ImageDraw.Draw(img)
-    w, h = img.size
     if not ssid:
-        _text(d, (w // 2, h // 2 - 30), status or "No network", 96 if not status else 72, bold=True,
-              anchor="mm", fit=w - 160)
-        _text(d, (w // 2, h // 2 + 80), error or ("The setup network comes back in a moment." if status
-              else "Connect an ethernet cable, or wait for wifi setup."), 44, MUTED, anchor="mm", fit=w - 160)
-        _footer(d, footer)
+        img = _notice(_canvas(portrait(rotation)), footer, logo, status or "Geen netwerk", kicker="Wifi",
+                      text=error or ("Het instelnetwerk komt zo terug" if status
+                                     else "Sluit een netwerkkabel aan, of wacht op de wifi-instelling"),
+                      busy=bool(status) and not error, warn=not status or bool(error))
         return _save(img, path, rotation)
-    left = 160
-    _text(d, (left, 220), "Set up wifi", 80, bold=True)
-    _text(d, (left, 340), "1.  Scan the QR code, or join this wifi network:", 38, MUTED)
-    _text(d, (left - 4, 400), ssid, 96, ACCENT, bold=True)
-    _text(d, (left, 530), "Password", 34, MUTED)
-    _text(d, (left + 180, 515), password, 64, FG, bold=True)
-    _text(d, (left, 640), "2.  A setup page opens on your phone: pick the", 38, MUTED)
-    _text(d, (left + 54, 690), "screen's network and enter its password.", 38, MUTED)
-    _text(d, (left + 54, 750), "No page? Open " + portal_url + " in your browser.", 34, MUTED)
+    img = _canvas()
+    d = ImageDraw.Draw(img, "RGBA")
+    _head(img, d, logo, "GEEN VERBINDING", warn=True)
+    y = 236
+    _text(d, (120, y), "Wifi instellen", 84, FG, "display", "lt")
+    y += 88 + 45 + 27
+    _step(d, 120, y, 1, "Scan de QR-code, of maak verbinding met:")
+    y += 27 + 18
+    _text(d, (198, y), ssid, 72, (255, 255, 255), "mono", "lt", fit=W - 120 - 480 - 108 - 198)
+    y += 72 + 24
+    _text(d, (198, y + 27), "WACHTWOORD", 22, MUTED, "mono", "lm", track=0.14)
+    _text(d, (390, y + 27), password, 48, FG, "mono", "lm")
+    y += 54 + 45 + 27
+    _step(d, 120, y, 2, "Kies op je telefoon het wifi-netwerk van het scherm")
+    y += 27 + 27
+    _text(d, (198, y), f"Geen pagina? Open {portal_url} in je browser", 25, MUTED, "mono", "lt")
     if error:
-        _text(d, (left, 850), error, 40, ERROR, bold=True)
+        _text(d, (198, y + 63), error, 33, ERROR, "semi", "lt", fit=W - 120 - 480 - 108 - 198)
     elif status:
-        _text(d, (left, 850), status, 40, ACCENT)
-    _qr(img, wifi_qr(ssid, password), W - 160 - 480, 260, 480)
-    _footer(d, footer)
+        _text(d, (198, y + 63), status, 33, ACCENT, "semi", "lt", fit=W - 120 - 480 - 108 - 198)
+    qx, qy = W - 120 - 480, 222 + (762 - 537) // 2
+    _qr(img, wifi_qr(ssid, password), qx, qy, 480)
+    _text(d, (qx + 240, qy + 480 + 27), "Scan om te verbinden", 27, SOFT, anchor="mt")
+    _foot(d, footer)
     return _save(img, path, rotation)
 
 
@@ -203,6 +414,8 @@ def _selfcheck():
     wide = Image.new("RGB", (W, H), red)  # landscape layout on a portrait panel: scaled, black bars
     out = _turn(wide, 90)
     assert out.size == (W, H) and out.getpixel((W // 2, H // 2)) == red and out.getpixel((10, H // 2)) == BG
+    for kind in FONTS:  # the bundled fonts load, not the DejaVu fallback
+        assert _font(20, kind).getname()[0] != "DejaVu Sans", kind
     print("screens self-check OK")
 
 
@@ -214,7 +427,7 @@ if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
     f = "pi-a1b2c3d4e5f6a7b8 · 0.1.0"
-    url = "http://cms.local:8080/pair?code=K7Q-4M2"
+    url = "https://narrowcasting.zekerzichtbaar.nl/schermen?code=K7Q-4M2"
     print(pairing(os.path.join(out, "pairing.png"), "K7Q-4M2", url, time.time() + 600, f))
     print(pairing(os.path.join(out, "pairing-connecting.png"), footer=f))
     print(waiting(os.path.join(out, "waiting.png"), "Kantine links", f))
