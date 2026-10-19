@@ -21,6 +21,10 @@ StateDirectoryMode=0700
 Restart=always
 # video pipeline error -> agent exits 1; agent crash/kill -> back up in ~2 s (DoD: < 10 s).
 RestartSec=2
+# Main loop pings every second (pi_player.__main__.alive); a hung main thread gets killed + restarted.
+# 60 s: one video switch can legitimately block ~40 s (3 seek attempts with 10 s state timeouts).
+WatchdogSec=60
+NotifyAccess=main
 StandardInput=tty-force
 TTYPath=/dev/tty1
 TTYVTDisallocate=yes

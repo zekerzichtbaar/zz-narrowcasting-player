@@ -4,10 +4,12 @@
   pi-player reset [--config PATH]                       forget pairing + content -> first-boot flow
 """
 import argparse
+import faulthandler
 import logging
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,21 @@ log = logging.getLogger("pi-player")
 # ponytail: kmssink's frame counter as the stall check; a video with one frame held longer than
 # this (variable frame rate stills) would trip it, the CMS encodes a fixed frame rate.
 STALL = 10.0  # s without a new frame on HDMI while playing -> exit, systemd restarts us
+
+
+def alive():
+    """systemd watchdog ping (WatchdogSec in the unit). Only the main loop calls this, so a main
+    thread stuck in GStreamer (seen: v4l2h264dec teardown hanging on a playlist switch) stops the
+    pings and systemd kills + restarts the agent. No NOTIFY_SOCKET (dev) = no-op."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.connect("\0" + addr[1:] if addr[0] == "@" else addr)
+            s.sendall(b"WATCHDOG=1")
+    except OSError as e:
+        log.warning("watchdog ping failed: %s", e)
 
 
 def runtime_dir():
@@ -49,6 +66,7 @@ def play_synced(display, cfg, content=None, keep_playing=lambda: True):
     th, last_log = cfg["sync"], 0.0
     frames, moved = None, time.monotonic()
     while True:
+        alive()
         if not display.alive():
             raise DisplayError(display.error)
         if not keep_playing():
@@ -148,6 +166,7 @@ class Agent:
     def loop(self):
         last = None
         while True:
+            alive()
             if not self.display.alive():
                 raise DisplayError(self.display.error)
             st = self.state()
@@ -242,6 +261,7 @@ def main():
     p.add_argument("--rotation", type=int, choices=[0, 90, 270],
                    help="panel hung this many degrees clockwise, turns the setup screens only (without content updates; the CMS decides otherwise)")
     a = p.parse_args()
+    faulthandler.enable()  # watchdog kill (SIGABRT): every thread's Python stack in the journal
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load(a.config)
     if a.command == "reset":
