@@ -22,8 +22,8 @@ Gst = None
 
 # The Pi 4 hardware decoder refuses streams without colour tags (common in CMS/ffmpeg exports)
 # with "not-negotiated"; tagging them bt709 makes it accept them. Zero-copy into kmssink.
-HW_DECODE = "h264parse ! capssetter caps=video/x-h264,colorimetry=bt709 ! v4l2h264dec"
-SW_DECODE = "h264parse ! avdec_h264 ! videoconvert"  # dev machines / no v4l2 decoder
+HW_DECODE = "h264parse name=parse ! capssetter caps=video/x-h264,colorimetry=bt709 ! v4l2h264dec"
+SW_DECODE = "h264parse name=parse ! avdec_h264 ! videoconvert"  # dev machines / no v4l2 decoder
 QUEUE = "queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0"
 
 # Rotation (CMS `screens.rotation`) = how the panel hangs, turned clockwise. Only the setup screens
@@ -80,6 +80,12 @@ def _gst():
         G.init(None)
         Gst = G
     return Gst
+
+
+def _no_drain(pad, info):
+    if info.get_event().type == Gst.EventType.SEGMENT_DONE:
+        return Gst.PadProbeReturn.DROP
+    return Gst.PadProbeReturn.OK
 
 
 class Display:
@@ -162,6 +168,11 @@ class Display:
         dec = HW_DECODE if Gst.ElementFactory.find("v4l2h264dec") else SW_DECODE
         p = self._new(f"qtdemux name=d d.video_0 ! {dec} ! {QUEUE}", video)
         p.set_start_time(Gst.CLOCK_TIME_NONE)  # we own the base time
+        # A decoder drains on SEGMENT_DONE, i.e. at every loop end. The next loop follows right
+        # behind, so there is nothing to drain, and v4l2h264dec drops 2 frames per drain ("left
+        # undrained after CMD_STOP") which made the picture creep ~50 ms per loop until a re-join.
+        # Events only: no per-frame Python.
+        p.get_by_name("parse").get_static_pad("src").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _no_drain)
         self._state(p, Gst.State.PAUSED)
         ok, dur = p.query_duration(Gst.Format.TIME)
         if not ok or dur <= 0:
