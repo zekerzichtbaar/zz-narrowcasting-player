@@ -78,7 +78,7 @@ class Agent:
         self.monitor, self.wifi = monitor, wifi
         self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
-        self.timer = state.OfflineTimer(time.time())
+        self.timer = state.OfflineTimer(time.monotonic())  # monotonic: no RTC, NTP jumps the wall clock days
         self.shown = None  # (key, rotation) of the screen on HDMI; None = video or nothing
 
     def rotation(self):
@@ -86,7 +86,7 @@ class Agent:
         return self.content.rotation() if self.content else to_rotation(self.cfg.get("rotation"))
 
     def state(self):
-        now = time.time()
+        now = time.monotonic()
         has_video = os.path.exists(self.cfg["video"])
         if self.content is None:  # dev: no state_dir, local file only
             return state.PLAYING if has_video else state.WAITING

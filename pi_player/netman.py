@@ -444,7 +444,9 @@ class WifiSetup:
                         hold = time.monotonic() + self.HOLD_AFTER_CONNECT
                         continue
                 if not self.ap_up and time.monotonic() >= hold:
-                    if not self._up():
+                    if self._up():
+                        last_try = time.monotonic()  # give people a full `retry` on the fresh AP
+                    else:
                         self.status = None
                         time.sleep(min(self.retry, 30))
             except Exception as e:  # never let the wifi thread die
