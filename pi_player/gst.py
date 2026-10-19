@@ -100,9 +100,15 @@ class Display:
         return self.error is None
 
     def close(self):
-        p, self.pipe = self.pipe, None
+        p, self.pipe, dur = self.pipe, None, self.duration
         self.still = False
         self.epoch = self.duration = None
+        if p and dur:
+            # A decoder drains at every loop end (SEGMENT_DONE) and needs the sink to keep taking
+            # frames meanwhile. Stopping then deadlocked (sink paused, decoder waiting for a free
+            # buffer, demuxer waiting for the decoder; seen on a playlist switch, which lands on a
+            # loop end). A flushing seek first unblocks all of them.
+            p.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH, 0)
         if p:
             p.set_state(Gst.State.NULL)
 
@@ -178,11 +184,10 @@ class Display:
         - Each loop's segment must start exactly one segment length after the previous one in
           running time. GStreamer 1.22 (Pi OS bookworm) puts it one frame short (base +5.960 s on a
           6 s file; 1.28 is right), so every loop crept a frame ahead until a visible re-join.
-        - A decoder drains on SEGMENT_DONE, i.e. at every loop end, though the next loop follows
-          right behind; v4l2h264dec loses 2 frames per drain ("left undrained after CMD_STOP")."""
+        The decoder still drains on SEGMENT_DONE at every loop end. Without that drain v4l2h264dec
+        now and then lost the last ~2.7 s of a loop when the next loop's keyframe came in (frozen
+        picture, then a re-join); with it, it loses 2 frames ("left undrained after CMD_STOP")."""
         e = info.get_event()
-        if e.type == Gst.EventType.SEGMENT_DONE:
-            return Gst.PadProbeReturn.DROP
         if e.type == Gst.EventType.FLUSH_STOP:  # join(): a fresh timeline, take its segment as is
             self._seg = None
         elif e.type == Gst.EventType.SEGMENT:
