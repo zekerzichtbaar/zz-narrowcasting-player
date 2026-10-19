@@ -82,12 +82,6 @@ def _gst():
     return Gst
 
 
-def _no_drain(pad, info):
-    if info.get_event().type == Gst.EventType.SEGMENT_DONE:
-        return Gst.PadProbeReturn.DROP
-    return Gst.PadProbeReturn.OK
-
-
 class Display:
     def __init__(self, sink="kmssink"):
         G = _gst()
@@ -100,6 +94,7 @@ class Display:
         self.epoch = self.duration = None  # ns, while a video plays
         self._offset = None  # pts - running time of the frames reaching the sink
         self.base = 0  # clock time (ns) of the first frame after the last join
+        self._seg = None  # last segment past the parser (_loop_events)
 
     def alive(self):
         return self.error is None
@@ -168,11 +163,8 @@ class Display:
         dec = HW_DECODE if Gst.ElementFactory.find("v4l2h264dec") else SW_DECODE
         p = self._new(f"qtdemux name=d d.video_0 ! {dec} ! {QUEUE}", video)
         p.set_start_time(Gst.CLOCK_TIME_NONE)  # we own the base time
-        # A decoder drains on SEGMENT_DONE, i.e. at every loop end. The next loop follows right
-        # behind, so there is nothing to drain, and v4l2h264dec drops 2 frames per drain ("left
-        # undrained after CMD_STOP") which made the picture creep ~50 ms per loop until a re-join.
-        # Events only: no per-frame Python.
-        p.get_by_name("parse").get_static_pad("src").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _no_drain)
+        p.get_by_name("parse").get_static_pad("src").add_probe(
+            Gst.PadProbeType.EVENT_DOWNSTREAM | Gst.PadProbeType.EVENT_FLUSH, self._loop_events)
         self._state(p, Gst.State.PAUSED)
         ok, dur = p.query_duration(Gst.Format.TIME)
         if not ok or dur <= 0:
@@ -180,6 +172,29 @@ class Display:
         self.epoch, self.duration = int(epoch * 1e9), dur
         self.join()
         return dur / 1e9
+
+    def _loop_events(self, pad, info):
+        """Fix up the loop between parser and decoder (events only: no per-frame Python).
+        - Each loop's segment must start exactly one segment length after the previous one in
+          running time. GStreamer 1.22 (Pi OS bookworm) puts it one frame short (base +5.960 s on a
+          6 s file; 1.28 is right), so every loop crept a frame ahead until a visible re-join.
+        - A decoder drains on SEGMENT_DONE, i.e. at every loop end, though the next loop follows
+          right behind; v4l2h264dec loses 2 frames per drain ("left undrained after CMD_STOP")."""
+        e = info.get_event()
+        if e.type == Gst.EventType.SEGMENT_DONE:
+            return Gst.PadProbeReturn.DROP
+        if e.type == Gst.EventType.FLUSH_STOP:  # join(): a fresh timeline, take its segment as is
+            self._seg = None
+        elif e.type == Gst.EventType.SEGMENT:
+            s, prev = e.parse_segment(), self._seg
+            if prev is not None and prev.stop != Gst.CLOCK_TIME_NONE:
+                want = prev.base + prev.stop - prev.start
+                if s.base != want:
+                    s.base = want
+                    pad.push_event(Gst.Event.new_segment(s))  # comes back through here, base right
+                    return Gst.PadProbeReturn.DROP
+            self._seg = s
+        return Gst.PadProbeReturn.OK
 
     def _probe(self, pad, info, seg):
         if info.type & Gst.PadProbeType.EVENT_DOWNSTREAM:
