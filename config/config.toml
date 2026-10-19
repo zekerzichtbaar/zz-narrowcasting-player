@@ -23,7 +23,7 @@ state_dir = "/var/lib/pi-player"
 # Video to play. Defaults to <state_dir>/current.mp4 when empty.
 video = ""
 
-# Sync reference: frame 0 plays at epoch + k*duration (Unix seconds). The manifest overrides this.
+# Sync reference: frame 0 plays at epoch + k*duration (Unix seconds). Same on every screen; the manifest's epoch is ignored.
 epoch = 0
 
 # HDMI mode, written to the kernel cmdline by install.sh (re-run it + reboot after changing).

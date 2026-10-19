@@ -55,7 +55,10 @@ def play_synced(display, cfg, content=None, keep_playing=lambda: True):
     keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch."""
     video = cfg["video"]
     man = content.current_manifest() if content and video == content.current else None
-    epoch = float(man.get("epoch") or 0) if man else float(cfg["epoch"])  # manifest is authoritative
+    # Every screen counts loops from the same fixed epoch (config, 0 = 1970), never the manifest's:
+    # the CMS gave two screens of one group different epochs (12.5 s apart). Same clock (chrony) +
+    # same duration = same frame, whatever the CMS sends.
+    epoch = float(cfg["epoch"])
     duration = display.play(video, epoch)
     if man and abs(float(man["duration"]) - duration) > 0.05:
         log.warning("manifest duration %.3f s != file duration %.3f s; looping on the file's",

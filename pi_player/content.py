@@ -32,15 +32,16 @@ def switch_time(manifest, ready_at, have_current=True):
     """When to put a verified download on screen.
 
     At activate_at if ready by then; if ready later, at the next loop boundary of the new video
-    (epoch + k*duration) so it starts at frame 0 on every screen. Nothing on screen -> right away.
+    (k*duration since 1970) so it starts at frame 0 on every screen. Nothing on screen -> right away.
+    The manifest's epoch is ignored, see play_synced.
     """
     if not have_current:
         return ready_at
     at = float(manifest.get("activate_at") or 0)
     if ready_at <= at:
         return at
-    epoch, dur = float(manifest.get("epoch") or 0), float(manifest["duration"])
-    return epoch + math.ceil((ready_at - epoch) / dur) * dur
+    dur = float(manifest["duration"])
+    return math.ceil(ready_at / dur) * dur
 
 
 def identify_osd(name, until, now):
@@ -372,7 +373,7 @@ def _selfcheck():
     assert switch_time(m, 1000.0) == 1000.0
     assert switch_time(m, 1000.5) == 1020.0              # late -> next loop boundary (17*60)
     assert switch_time(m, 1020.0) == 1020.0              # late, exactly on a boundary
-    assert switch_time({**m, "epoch": 5}, 1001.0) == 1025.0
+    assert switch_time({**m, "epoch": 5}, 1001.0) == 1020.0  # the CMS epoch is ignored
     assert switch_time(m, 900.0, have_current=False) == 900.0  # nothing on screen -> now
     # late switches land on a boundary for every screen, whenever each one finished
     assert switch_time(m, 1003.0) == switch_time(m, 1019.9)

@@ -144,7 +144,7 @@ Fields:
 | `sha256` | string | Lowercase hex of the whole file. A mismatch means the download is discarded. |
 | `size` | int | Bytes (optional, for progress/space checks). |
 | `duration` | float | Exact video duration in seconds (frames / fps). Used for sync math. |
-| `epoch` | float | Sync reference: frame 0 plays at `epoch + k * duration`. Same for all screens in a group. Default `0`. |
+| `epoch` | float | **Ignored by the Pi since v0.8.6**: every screen uses epoch `0` (frame 0 at `k * duration` since 1970), so screens with the same duration line up whatever the CMS sends. Kept for older players. |
 | `activate_at` | float | Unix time from which this version may be shown. All screens in a group get the same value. `0` = right away (at the next loop boundary when something already plays). |
 | `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big, full screen, instead of the video or setup screen until this Unix time (the video re-joins the group clock afterwards). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
 | `orientation` | string | `landscape` or `portrait`: the format of the playlist. Informational; the Pi plays whatever size the file has (fitted, black bars). A portrait playlist on a panel at `rotation` 90/270 comes as a 1920x1080 file with the picture already turned (see `rotation`). |
@@ -152,11 +152,12 @@ Fields:
 | `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz"}`, the release this player should install, or `null`. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
-Sync math on the Pi: `position = (now - epoch) mod duration`.
+Sync math on the Pi: `position = now mod duration` (epoch 0; the manifest's `epoch` is ignored, a CMS once
+gave two screens of one group different epochs).
 
 Activation: the Pi downloads to `next.mp4`, verifies `sha256`, then switches at `activate_at`.
 If the download finishes after `activate_at`, the Pi keeps playing the old video and switches at
-the next loop boundary of the new video (`now` where `(now - epoch) mod duration ~ 0`).
+the next loop boundary of the new video (`now` where `now mod duration ~ 0`).
 If nothing is on screen yet (first content after pairing), the Pi shows a verified download
 immediately instead of waiting for `activate_at`; sync math still puts it at the group position.
 The CMS should set `activate_at` far enough ahead for all screens to download
