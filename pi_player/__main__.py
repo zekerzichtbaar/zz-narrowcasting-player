@@ -18,6 +18,10 @@ from .gst import Display, DisplayError, quiet_console, to_rotation
 
 log = logging.getLogger("pi-player")
 
+# ponytail: kmssink's frame counter as the stall check; a video with one frame held longer than
+# this (variable frame rate stills) would trip it, the CMS encodes a fixed frame rate.
+STALL = 10.0  # s without a new frame on HDMI while playing -> exit, systemd restarts us
+
 
 def runtime_dir():
     """Where the setup-screen PNGs go: systemd's RuntimeDirectory, or a temp dir on dev machines."""
@@ -43,6 +47,7 @@ def play_synced(display, cfg, content=None, keep_playing=lambda: True):
              duration, epoch)
     heartbeat.STATUS["state"] = "PLAYING"
     th, last_log = cfg["sync"], 0.0
+    frames, moved = None, time.monotonic()
     while True:
         if not display.alive():
             raise DisplayError(display.error)
@@ -53,6 +58,13 @@ def play_synced(display, cfg, content=None, keep_playing=lambda: True):
         if d is not None and abs(d) > th["seek_threshold"]:  # clock stepped, pipeline stalled, ...
             log.warning("drift %+.1f ms -> re-joining the group clock", d * 1000)
             display.join()
+            moved = time.monotonic()
+        # the decoder can hang without an error: the picture freezes, position/drift go quiet
+        rendered = display.stats().get("rendered")  # None on dev sinks: no check
+        if rendered != frames:
+            frames, moved = rendered, time.monotonic()
+        elif rendered is not None and time.monotonic() - moved > STALL:
+            raise DisplayError(f"no new frame for {STALL:.0f} s (rendered stuck at {rendered})")
         now = time.time()
         if now - last_log >= 60:
             log.info("drift %s ms, frames this loop %s", heartbeat.STATUS["drift_ms"], display.stats())
