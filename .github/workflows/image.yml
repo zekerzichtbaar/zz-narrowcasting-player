@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest (26.04) has no qemu-user-static package
     timeout-minutes: 120
     env:
       # Empty on tag pushes: image/build.sh then falls back to the same defaults as above.
