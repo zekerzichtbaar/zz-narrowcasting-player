@@ -110,10 +110,10 @@ def random_password(n=8):
 def friendly_error(stderr):
     s = stderr.lower()
     if "secrets were required" in s or "802-1x" in s or "psk" in s:
-        return "Wrong password?"
+        return "Verkeerd wachtwoord?"
     if "no network with ssid" in s or "not found" in s or "timeout" in s or "timed out" in s:
-        return "Network not reachable."
-    return "Could not connect."
+        return "Netwerk niet bereikbaar."
+    return "Verbinden mislukt."
 
 
 # --- nmcli ----------------------------------------------------------------------------------
@@ -300,7 +300,7 @@ class WifiSetup:
         self.ssid, self.password = hotspot_ssid(dev_id), random_password()
         self.retry, self.monitor, self.port = float(retry), monitor, port
         self.networks = []
-        self.status = None     # transient line, e.g. "Connecting to X…"
+        self.status = None     # transient line, e.g. "Verbinden met X…"
         self.error = None      # last failure, shown on screen + page
         self.ap_up = False
         self.wanted = False
@@ -357,16 +357,16 @@ class WifiSetup:
         from . import portal
         self.iface = self.iface or wifi_iface()
         if not self.iface:
-            self.error = "No wifi adapter found — connect an ethernet cable."
+            self.error = "Geen wifi-adapter gevonden — sluit een netwerkkabel aan."
             return False
-        self.status = self.status or "Starting wifi setup…"
+        self.status = self.status or "Wifi-instelling starten…"
         if time.monotonic() - self.scanned_at > 10:  # retry path just scanned
             self._scan()
         ok, err = start_hotspot(self.iface, self.ssid, self.password)
         self.status = None
         if not ok:
             log.error("hotspot failed: %s", err)
-            self.error = "Could not start the setup hotspot — connect an ethernet cable."
+            self.error = "Instelnetwerk starten mislukt — sluit een netwerkkabel aan."
             return False
         self.ap_up = True
         log.info("hotspot %s up", self.ssid)
@@ -413,7 +413,7 @@ class WifiSetup:
                 if job and job[0] == "connect":
                     _, ssid, pw = job
                     time.sleep(2)  # let the portal's answer reach the phone first
-                    self.status, self.error = f"Connecting to {ssid}…", None
+                    self.status, self.error = f"Verbinden met {ssid}…", None
                     self._down()
                     sec = next((n["security"] for n in self.networks if n["ssid"] == ssid), None)
                     ok, err = connect(self.iface, ssid, pw, sec or "", hidden=sec is None)
@@ -423,18 +423,20 @@ class WifiSetup:
                         hold = time.monotonic() + self.HOLD_AFTER_CONNECT
                         continue
                     if ok and self.no_cms:
-                        self.error = f"Connected to {ssid}, but the server is not reachable (no internet?)"
+                        self.error = f"Verbonden met {ssid}, maar de server is niet bereikbaar (geen internet?)"
                     else:
-                        self.error = f"Could not connect to {ssid}: {err or 'no connection'}"
+                        self.error = f"Verbinden met {ssid} mislukt: {err or 'geen verbinding'}"
                     last_try = time.monotonic()
                 elif job and job[0] == "rescan":
                     time.sleep(2)
-                    self.status = "Scanning for networks…"
+                    self.status = "Netwerken zoeken…"
                     self._down()
                     self.status = None
                 elif self.ap_up and now - max(last_try, self.activity) >= self.retry:
                     last_try = now
-                    self.status = "Checking saved networks…"
+                    if not saved_wifi():  # fresh screen: dropping the AP to scan helps nobody
+                        continue
+                    self.status = "Opgeslagen netwerken proberen…"
                     self._down()
                     self._scan()
                     found = try_known(self.networks) and self._online()
@@ -480,8 +482,8 @@ def _selfcheck():
     pw = random_password()
     assert len(pw) == 8 and set(pw) <= set(PW_ALPHABET)
     assert friendly_error("Error: Connection activation failed: Secrets were required, but not "
-                          "provided.") == "Wrong password?"
-    assert friendly_error("Error: No network with SSID 'x' found.") == "Network not reachable."
+                          "provided.") == "Verkeerd wachtwoord?"
+    assert friendly_error("Error: No network with SSID 'x' found.") == "Netwerk niet bereikbaar."
     _selfcheck_online()
     print("netman self-check OK")
 

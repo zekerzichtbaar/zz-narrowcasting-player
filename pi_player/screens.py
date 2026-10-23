@@ -468,8 +468,8 @@ if __name__ == "__main__":
     print(identify(os.path.join(out, "identify.png"), "Kantine links", f))
     print(wifi_setup(os.path.join(out, "wifi.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-error.png"), "Narrowcast-1E2F", "k7q4m2xa",
-                     error="Could not connect to Kantine: Wrong password?", footer=f))
-    print(wifi_setup(os.path.join(out, "wifi-busy.png"), status="Connecting to Kantine…", footer=f))
+                     error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?", footer=f))
+    print(wifi_setup(os.path.join(out, "wifi-busy.png"), status="Verbinden met Kantine…", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-none.png"), footer=f))
     for r in (90, 270):  # as sent to a panel hung at r: turn your head (or the image) to read it
         print(pairing(os.path.join(out, f"pairing-{r}.png"), "K7Q-4M2", url, time.time() + 600, f, rotation=r))

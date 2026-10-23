@@ -151,7 +151,7 @@ Walkthrough on a fresh Pi with no ethernet:
    or notification should open the setup page. If it doesn't, browse to **http://10.42.0.1**.
 3. Pick your network (or type a hidden SSID), enter its password and tap connect. The
    hotspot goes down while the Pi tries to join. If that fails, the hotspot comes back and
-   both the screen and the page show the error (e.g. *Wrong password?*). Rejoin and try again.
+   both the screen and the page show the error (e.g. *Verkeerd wachtwoord?*). Rejoin and try again.
    *Rescan* drops the hotspot briefly to refresh the network list, because the Pi 4 can't
    scan and run a hotspot at the same time.
 4. **Pairing.** Once the Pi is online, the screen shows a short code (`K7Q-4M2`) and a QR
@@ -167,7 +167,7 @@ If ethernet is connected (and reaches the CMS), the Pi skips wifi setup.
 the CMS answers `GET <cms_url>/up` (any HTTP status, 5 s timeout, every 30 s while it answers;
 two failed probes in a row count). A wifi without internet, or one behind a guest-network login
 page, therefore counts as offline. After joining a network from the setup page the Pi checks the
-CMS too and shows *Connected to X, but the server is not reachable* when it can't get there.
+CMS too and shows *Verbonden met X, maar de server is niet bereikbaar* when it can't get there.
 A CMS that is completely down for longer than `offline_timeout` also brings up the hotspot
 (the Pi can't tell that apart from a broken network); it returns as soon as the CMS answers.
 
@@ -318,7 +318,7 @@ Rendering the PNGs needs Pillow and qrcode; on a Mac without them:
 3. Scan the QR code with an iPhone and with an Android phone. The captive sheet or
    notification should open the page. If it doesn't, browse to http://10.42.0.1.
 4. Pick the network and enter a wrong password first. Within about 1 min (after rejoining),
-   the screen and the page should both show *Wrong password?*.
+   the screen and the page should both show *Verkeerd wachtwoord?*.
 5. Enter the correct password. The screen should show the pairing code.
 6. Turn that wifi AP off. The setup screen should come back after 30 s (or 10 min if
    playing). Turn the AP back on: the Pi should rejoin within `wifi_retry` (2 min).

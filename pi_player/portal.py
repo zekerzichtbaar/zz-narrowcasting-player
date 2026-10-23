@@ -9,25 +9,64 @@ Dev preview with a fake network list: python3 -m pi_player.portal serve [PORT]
 import html
 import http.server
 import logging
+import os
 import threading
 import urllib.parse
 
 log = logging.getLogger("pi-player")
 
+# Same look as the TV screens (screens.py palette + fonts); fonts and logo are served by us,
+# the hotspot has no internet.
 CSS = """
-*{box-sizing:border-box}body{margin:0;font:16px/1.45 system-ui,-apple-system,sans-serif;
-background:#121418;color:#f0f0f0}main{max-width:480px;margin:0 auto;padding:24px 16px 40px}
-h1{font-size:24px;margin:0 0 4px}p{color:#969ba5;margin:4px 0 16px}
-.box{border-radius:10px;padding:12px 14px;margin:0 0 16px}.err{background:#4a1d1d;color:#ffd0d0}
-.ok{background:#1d3a26;color:#d4f5dc}label.net{display:flex;align-items:center;gap:10px;
-padding:12px;border:1px solid #2c3038;border-radius:10px;margin:0 0 8px;cursor:pointer}
-label.net span{flex:1;overflow-wrap:anywhere}small{color:#969ba5}
-input[type=text],input[type=password]{width:100%;font:inherit;padding:12px;border-radius:10px;
-border:1px solid #2c3038;background:#1b1e24;color:inherit;margin:4px 0 12px}
-button{font:inherit;font-weight:600;padding:12px 16px;border-radius:10px;border:0;width:100%;
-background:#ffc400;color:#121418;margin:4px 0}button.sec{background:#2c3038;color:#f0f0f0}
-h2{font-size:16px;margin:20px 0 8px;color:#969ba5;font-weight:600}
+@font-face{font-family:Bricolage;src:url(/a/display.ttf);font-display:swap}
+@font-face{font-family:GeistMono;src:url(/a/mono.ttf);font-display:swap}
+*{box-sizing:border-box}html{background:#07080a}
+body{margin:0;min-height:100vh;font:17px/1.45 system-ui,-apple-system,sans-serif;color:#f2f4f6;
+background:radial-gradient(circle at 10% 0,rgba(61,220,132,.22),transparent 340px),
+radial-gradient(circle at 85% 100%,rgba(37,70,240,.22),transparent 380px) no-repeat}
+main{max-width:480px;margin:0 auto;padding:20px 16px 32px}
+.top{display:flex;align-items:center;gap:10px;margin:0 0 28px}
+.top b{font:20px Bricolage,system-ui,sans-serif;flex:1}.top svg{width:36px;height:36px}
+.mono{font-family:GeistMono,ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}
+.top small{font-size:11px;color:#a3abb7;display:flex;align-items:center;gap:6px}
+.top small:before{content:"";width:8px;height:8px;border-radius:50%;background:#f5b83d}
+h1{font:30px/1.15 Bricolage,system-ui,sans-serif;margin:0 0 8px}p{color:#a3abb7;margin:0 0 20px}
+.box{border-radius:12px;padding:12px 14px;margin:0 0 20px;border:1px solid}
+.err{background:rgba(255,110,100,.12);border-color:rgba(255,110,100,.4);color:#ff6e64}
+.ok{background:rgba(61,220,132,.1);border-color:rgba(61,220,132,.35);color:#c9d1db}.ok b{color:#3ddc84}
+h2{font-size:16px;margin:26px 0 10px;color:#c9d1db;font-weight:500;display:flex;gap:12px;align-items:center}
+h2 i{font:normal 13px GeistMono,ui-monospace,monospace;display:inline-grid;place-items:center;
+width:28px;height:28px;border-radius:50%;border:2px solid #3a414c;color:#f2f4f6}
+label.net{display:flex;align-items:center;gap:12px;padding:14px;border:2px solid #3a414c;
+border-radius:12px;margin:0 0 8px;cursor:pointer;min-height:56px;background:rgba(7,8,10,.6)}
+label.net:has(input:checked){border-color:#3ddc84;background:rgba(61,220,132,.08)}
+label.net input{width:20px;height:20px;accent-color:#3ddc84;margin:0}
+label.net span{flex:1;overflow-wrap:anywhere;font-weight:500}label.net small{color:#a3abb7;white-space:nowrap}
+details{margin:4px 0 0;color:#a3abb7}summary{cursor:pointer;padding:8px 0}
+input[type=text],input[type=password]{width:100%;font:inherit;padding:14px;border-radius:12px;
+border:2px solid #3a414c;background:rgba(7,8,10,.6);color:inherit;margin:4px 0 8px}
+input:focus{outline:none;border-color:#3ddc84}::placeholder{color:#6b7380}
+.show{display:flex;gap:8px;align-items:center;color:#a3abb7;font-size:15px;margin:0 0 16px}
+.show input{accent-color:#3ddc84}
+button{font:inherit;font-weight:700;padding:16px;border-radius:12px;border:0;width:100%;
+background:#3ddc84;color:#04200e;margin:8px 0 0}
+button.sec{background:none;color:#a3abb7;font-weight:500;padding:10px;text-decoration:underline}
+.foot{font-size:14px;margin:28px 0 0;text-align:center;color:#6b7380}
+.zz{display:flex;justify-content:center;align-items:center;gap:8px;margin:20px 0 0;
+font:14px Bricolage,system-ui,sans-serif;color:#c8cacc}.zz img{height:21px}
 """
+
+# The Narrowcasting mark (screens._mark / CMS app-logo-icon.tsx)
+MARK = """<svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="7.8" fill="#3ddc84"/>
+<g transform="translate(8 8) scale(.75) translate(-4 -4.5)" fill="none" stroke="#04200e" stroke-width="3"
+stroke-linecap="round"><rect x="6" y="9" width="28" height="18.5" rx="3.5"/><path d="M14.5 32.5h11"/>
+<path d="M17.5 14.25v8l6.5-4z" fill="#04200e" stroke="none"/><circle cx="33" cy="10" r="5.75"
+fill="#3ddc84" stroke="none"/><circle cx="33" cy="10" r="4.5" fill="#ff0080" stroke="none"/></g></svg>"""
+
+_DIR = os.path.dirname(__file__)
+ASSETS = {"/a/display.ttf": ("fonts/BricolageGrotesque-Bold.ttf", "font/ttf"),
+          "/a/mono.ttf": ("fonts/GeistMono-Medium.ttf", "font/ttf"),
+          "/a/zz.png": ("zz-logo.png", "image/png")}
 
 
 def _bars(signal):
@@ -39,12 +78,12 @@ def page(ssid, networks, error=None, notice=None, status=None):
     e = html.escape
     rows = []
     for i, n in enumerate(networks):
-        lock = " <small>(secured)</small>" if n["security"] else ""
+        lock = "🔒 " if n["security"] else ""
         rows.append(
             f'<label class="net"><input type="radio" name="ssid" value="{e(n["ssid"])}"'
-            f'{" checked" if i == 0 else ""}><span>{e(n["ssid"])}{lock}</span>'
-            f'<small>{_bars(n["signal"])}</small></label>')
-    nets = "".join(rows) or "<p>No networks found. Try a rescan, or type the name below.</p>"
+            f'{" checked" if i == 0 else ""}><span>{e(n["ssid"])}</span>'
+            f'<small>{lock}{_bars(n["signal"])}</small></label>')
+    nets = "".join(rows) or "<p>Geen netwerken gevonden. Vernieuw de lijst, of typ de naam hieronder.</p>"
     msg = ""
     if error:
         msg += f'<div class="box err">{e(error)}</div>'
@@ -52,20 +91,26 @@ def page(ssid, networks, error=None, notice=None, status=None):
         msg += f'<div class="box ok">{notice}</div>'
     if status:
         msg += f'<div class="box ok">{e(status)}</div>'
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Screen wifi setup</title>
+    return f"""<!doctype html><html lang="nl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Scherm instellen</title>
 <style>{CSS}</style></head><body><main>
-<h1>Connect this screen to wifi</h1><p>Pick the network the screen should use and enter its password.</p>
+<div class="top">{MARK}<b>Narrowcasting</b><small class="mono">Geen verbinding</small></div>
+<h1>Verbind het scherm met wifi</h1><p>Kies het netwerk dat het scherm moet gebruiken.</p>
 {msg}
 <form method="post" action="/connect">
-<h2>Networks in range</h2>{nets}
-<h2>Not listed? (hidden network)</h2>
-<input type="text" name="other" placeholder="Network name" autocapitalize="off" autocorrect="off">
-<h2>Password</h2>
-<input type="password" name="password" placeholder="Leave empty for an open network" autocomplete="off">
-<button type="submit">Connect</button></form>
-<form method="post" action="/rescan"><button class="sec" type="submit">Rescan networks</button></form>
-<p><small>You are connected to the screen's setup network {e(ssid or "")}.</small></p>
+<h2><i>1</i>Kies het netwerk</h2>{nets}
+<details{"" if networks else " open"}><summary>Staat je netwerk er niet bij?</summary>
+<input type="text" name="other" placeholder="Netwerknaam (verborgen netwerk)" autocapitalize="off"
+autocorrect="off"></details>
+<h2><i>2</i>Wachtwoord van dat netwerk</h2>
+<input type="password" id="pw" name="password" placeholder="Leeg laten bij een open netwerk"
+autocomplete="off" autocapitalize="off" autocorrect="off">
+<label class="show"><input type="checkbox" onchange="pw.type=this.checked?'text':'password'">
+Wachtwoord tonen</label>
+<button type="submit">Verbinden</button></form>
+<form method="post" action="/rescan"><button class="sec" type="submit">Lijst vernieuwen</button></form>
+<p class="foot">Je bent verbonden met het instelnetwerk {e(ssid or "")} van het scherm.</p>
+<div class="zz"><img src="/a/zz.png" alt="">Zeker Zichtbaar</div>
 </main></body></html>"""
 
 
@@ -74,11 +119,11 @@ def validate(form):
     ssid = (form.get("other", [""])[0].strip() or form.get("ssid", [""])[0])
     pw = form.get("password", [""])[0]
     if not ssid:
-        return None, None, "Pick a network or type its name."
+        return None, None, "Kies een netwerk of typ de naam."
     if len(ssid.encode()) > 32:
-        return None, None, "Network name is too long."
+        return None, None, "Netwerknaam is te lang."
     if pw and not 8 <= len(pw) <= 63:
-        return None, None, "Wifi passwords are 8 to 63 characters."
+        return None, None, "Een wifi-wachtwoord is 8 tot 63 tekens."
     return ssid, pw, None
 
 
@@ -112,7 +157,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.ctrl.touch()
-        if not self._ours() or urllib.parse.urlsplit(self.path).path != "/":
+        path = urllib.parse.urlsplit(self.path).path
+        if self._ours() and path in ASSETS:
+            f, ctype = ASSETS[path]
+            with open(os.path.join(_DIR, f), "rb") as fh:
+                return self._send(200, fh.read(), [("Content-Type", ctype)])
+        if not self._ours() or path != "/":
             return self._redirect()  # captive-portal probes land here
         c = self.server.ctrl
         self._page(error=c.error, status=c.status)
@@ -128,8 +178,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if path == "/rescan":
             c.rescan()
             return self._page(notice=(
-                f"Rescanning… the setup network <b>{html.escape(c.ssid)}</b> disappears for about "
-                "20 seconds. Rejoin it afterwards and this page comes back with a fresh list."))
+                f"Netwerken zoeken… het instelnetwerk <b>{html.escape(c.ssid)}</b> is ongeveer 20 "
+                "seconden weg. Maak daarna opnieuw verbinding, dan komt deze pagina terug met een "
+                "nieuwe lijst."))
         if path != "/connect":
             return self._redirect()
         ssid, pw, err = validate(form)
@@ -137,9 +188,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._page(error=err)
         c.connect(ssid, pw)
         self._page(notice=(
-            f"Connecting the screen to <b>{html.escape(ssid)}</b>. The setup network turns off now "
-            "— you can close this page. If it fails, the setup network comes back within a minute "
-            "with an error on the screen; rejoin it and try again."))
+            f"Het scherm verbindt nu met <b>{html.escape(ssid)}</b>. Het instelnetwerk gaat uit, je "
+            "kunt deze pagina sluiten. Lukt het niet, dan komt het instelnetwerk binnen een minuut "
+            "terug met een melding op het scherm; maak opnieuw verbinding en probeer het nog eens."))
 
 
 class Portal:
@@ -172,7 +223,7 @@ class _FakeCtrl:
 
     def connect(self, ssid, pw):
         print(f"connect {ssid!r} pw={len(pw)} chars")
-        self.error = f"Could not connect to {ssid}: Wrong password?"  # so the reload shows an error
+        self.error = f"Verbinden met {ssid} mislukt: Verkeerd wachtwoord?"  # so the reload shows an error
 
     def rescan(self):
         print("rescan")
@@ -182,7 +233,7 @@ def _selfcheck():
     import urllib.request
     p = page("Narrowcast-1E2F", _FakeCtrl.networks, error="Bad <pw>")
     assert "Office &lt;5G&gt;" in p and "Bad &lt;pw&gt;" in p and p.count('type="radio"') == 3
-    assert "No networks found" in page("x", [])
+    assert "Geen netwerken gevonden" in page("x", [])
     assert validate({"ssid": ["Kantine"], "password": ["secret123"]}) == ("Kantine", "secret123", None)
     assert validate({"ssid": ["Kantine"], "other": [" Hidden "], "password": [""]}) == ("Hidden", "", None)
     assert validate({"password": ["secret123"]})[2]
@@ -207,9 +258,10 @@ def _selfcheck():
         assert e.code == 302 and e.headers["Location"] == f"http://127.0.0.1:{port}/"
     body = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
     assert "Kantine" in body
+    assert urllib.request.urlopen(f"http://127.0.0.1:{port}/a/mono.ttf").read()[:4] == b"\0\1\0\0"
     r = urllib.request.urlopen(f"http://127.0.0.1:{port}/connect",
                                data=b"ssid=Kantine&password=short").read().decode()
-    assert "8 to 63" in r
+    assert "8 tot 63" in r
     srv.stop()
     print("portal self-check OK")
 
