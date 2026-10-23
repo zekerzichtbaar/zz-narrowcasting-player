@@ -3,3 +3,7 @@ __pycache__/
 *.mp4
 image/out/
 pi_player/VERSION
+ios/*.xcodeproj
+ios/WifiSetupKit/.build/
+ios/WifiSetupKit/.swiftpm/
+.DS_Store

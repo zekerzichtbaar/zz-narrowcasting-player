@@ -1,7 +1,7 @@
 [Unit]
 Description=Pi Player narrowcasting agent
-Wants=network-online.target time-sync.target
-After=network-online.target time-sync.target systemd-user-sessions.service
+Wants=network-online.target time-sync.target bluetooth.service
+After=network-online.target time-sync.target systemd-user-sessions.service bluetooth.service
 # The agent owns the HDMI console; keep the login prompt off tty1.
 Conflicts=getty@tty1.service
 # Never give up restarting (crash loops would otherwise stop after 5 starts in 10 s).

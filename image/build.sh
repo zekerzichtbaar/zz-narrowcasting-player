@@ -189,8 +189,10 @@ eval "$(PI_PLAYER_INSTALL_LIB=1 bash -c ". '$REPO/install.sh'; declare -p CMDLIN
 check "/opt/pi-player present" test -f "$MNT/opt/pi-player/pi_player/__main__.py"
 check "pi_player/VERSION = $VERSION" grep -qx "$VERSION" "$MNT/opt/pi-player/pi_player/VERSION"
 check "pi-player.service enabled" test -L "$MNT/etc/systemd/system/multi-user.target.wants/pi-player.service"
+check "bluetooth.service enabled" test -L "$MNT/etc/systemd/system/bluetooth.target.wants/bluetooth.service"
 for p in python3 python3-gi python3-pil python3-qrcode gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav chrony dnsmasq-base; do
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav chrony dnsmasq-base \
+  bluez pi-bluetooth python3-dbus python3-cryptography; do
   check "package $p" pkg_installed "$p"
 done
 check "user $IMAGE_USER (uid 1000, sha512 password)" user_ok

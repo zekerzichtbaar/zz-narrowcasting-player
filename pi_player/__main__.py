@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, bell, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
+from . import __version__, bell, blesetup, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
 from .gst import Display, DisplayError, quiet_console, to_rotation
 
 log = logging.getLogger("pi-player")
@@ -106,9 +106,9 @@ def switch(content, cfg):
 class Agent:
     """Main loop: evaluate the state each tick, put the matching screen or the video on HDMI."""
 
-    def __init__(self, cfg, display, content, pair, monitor=None, wifi=None):
+    def __init__(self, cfg, display, content, pair, monitor=None, wifi=None, ble=None):
         self.cfg, self.display, self.content, self.pair = cfg, display, content, pair
-        self.monitor, self.wifi = monitor, wifi
+        self.monitor, self.wifi, self.ble = monitor, wifi, ble
         self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.monotonic())  # monotonic: no RTC, NTP jumps the wall clock days
@@ -134,7 +134,7 @@ class Agent:
         if st == state.WAITING:
             return (st, self.content.screen_name() if self.content else None)
         if st == state.WIFI_SETUP and self.wifi:
-            return (st,) + self.wifi.info()
+            return (st,) + self.wifi.info() + (self.ble.url if self.ble and self.ble.registered else None,)
         return (st,)
 
     def show(self, key):
@@ -151,7 +151,8 @@ class Agent:
             elif st == "IDENTIFY":
                 screens.identify(path, key[1], **common)
             else:
-                screens.wifi_setup(path, *key[1:], **common, portal_url="http://" + netman.HOTSPOT_IP)
+                screens.wifi_setup(path, *key[1:5], **common, portal_url="http://" + netman.HOTSPOT_IP,
+                                   setup_url=key[5] if len(key) > 5 else None)
         except Exception as e:  # e.g. Pillow/qrcode missing on a dev box: at least blank the video
             log.error("rendering %s screen failed: %s", st, e)
             self.display.close()
@@ -217,7 +218,7 @@ def run(cfg):
     signal.signal(signal.SIGINT, stop)
     try:
         log.info("pi-player %s, display via %s", __version__, cfg["video_sink"])
-        content = pair = monitor = wifi = None
+        content = pair = monitor = wifi = ble = None
         try:
             content = content_mod.Content(cfg)
             content.start()
@@ -232,9 +233,12 @@ def run(cfg):
             monitor = netman.Monitor(cfg["cms_url"]).start()
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()
+                if cfg["setup_url"] and blesetup.available():
+                    ble = blesetup.BleSetup(wifi, pair.device_id, cfg["setup_url"], pairing=lambda: pair.info,
+                                            paired=lambda: bool(content.token())).start()
             else:
                 log.warning("nmcli not found: no wifi setup hotspot (dev machine?)")
-        Agent(cfg, display, content, pair, monitor, wifi).loop()
+        Agent(cfg, display, content, pair, monitor, wifi, ble).loop()
     except DisplayError as e:
         # Let systemd restart the whole agent (fresh pipeline, fresh state) — simplest recovery.
         log.error("display: %s; exiting for restart", e)

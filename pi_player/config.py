@@ -12,6 +12,7 @@ DEFAULTS = {
     "manifest_poll": 30,
     "offline_timeout": 600,
     "wifi_retry": 120,
+    "setup_url": "https://app.zekerzichtbaar.tv/setup",
     "logo": "/etc/pi-player/logo.png",
     "ntp_server": "",
     "display_mode": "1920x1080@60",

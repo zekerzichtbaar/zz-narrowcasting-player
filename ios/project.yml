@@ -1,0 +1,142 @@
+name: Narrowcasting
+
+options:
+  bundleIdPrefix: nl.zekerzichtbaar
+  developmentRegion: nl
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: none
+
+settings:
+  base:
+    # Roan's personal team for device builds; switch to Zeker Zichtbaar's team before App Store Connect.
+    DEVELOPMENT_TEAM: 6QY93KDU3M
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+packages:
+  WifiSetupKit:
+    path: WifiSetupKit
+
+targets:
+  Narrowcasting:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Shared
+    dependencies:
+      - package: WifiSetupKit
+        products: [WifiSetupKit, WifiSetupUI]
+      - target: NarrowcastingClip
+    preBuildScripts:
+      # XcodeGen freezes the file list at generation time, so a new .swift file
+      # is invisible to Xcode until the project is regenerated. --use-cache
+      # makes this a no-op unless the source tree actually changed.
+      - name: Regenerate project from project.yml
+        basedOnDependencyAnalysis: false
+        script: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v xcodegen >/dev/null 2>&1 || exit 0
+          cd "$PROJECT_DIR" && xcodegen generate --use-cache --quiet
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Narrowcasting
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
+        NSBluetoothAlwaysUsageDescription: Via Bluetooth stel je de wifi van het scherm in.
+        NSCameraUsageDescription: Met de camera scan je de QR-code op het scherm.
+    entitlements:
+      path: App/Narrowcasting.entitlements
+      properties:
+        com.apple.developer.associated-appclip-app-identifiers:
+          - $(AppIdentifierPrefix)nl.zekerzichtbaar.narrowcasting.Clip
+        com.apple.developer.associated-domains:
+          - applinks:app.zekerzichtbaar.tv
+          - appclips:app.zekerzichtbaar.tv
+    settings:
+      base:
+        PRODUCT_NAME: Narrowcasting
+        PRODUCT_BUNDLE_IDENTIFIER: nl.zekerzichtbaar.narrowcasting
+
+  NarrowcastingClip:
+    type: application.on-demand-install-capable
+    platform: iOS
+    sources:
+      - path: Clip
+      - path: Shared
+    dependencies:
+      - package: WifiSetupKit
+        products: [WifiSetupKit, WifiSetupUI]
+    info:
+      path: Clip/Info.plist
+      properties:
+        CFBundleDisplayName: Scherm instellen
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
+        NSBluetoothAlwaysUsageDescription: Via Bluetooth stel je de wifi van het scherm in.
+        NSAppClip:
+          NSAppClipRequestEphemeralUserNotification: false
+          NSAppClipRequestLocationConfirmation: false
+    entitlements:
+      path: Clip/NarrowcastingClip.entitlements
+      properties:
+        com.apple.developer.parent-application-identifiers:
+          - $(AppIdentifierPrefix)nl.zekerzichtbaar.narrowcasting
+        com.apple.developer.associated-domains:
+          - appclips:app.zekerzichtbaar.tv
+    settings:
+      base:
+        PRODUCT_NAME: NarrowcastingClip
+        PRODUCT_BUNDLE_IDENTIFIER: nl.zekerzichtbaar.narrowcasting.Clip
+
+  NarrowcastingClipUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ClipUITests
+    dependencies:
+      - target: NarrowcastingClip
+    settings:
+      base:
+        TEST_TARGET_NAME: NarrowcastingClip
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: nl.zekerzichtbaar.narrowcasting.ClipUITests
+
+schemes:
+  Narrowcasting:
+    build:
+      targets:
+        Narrowcasting: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "-mockSetup": false
+  NarrowcastingClip:
+    build:
+      targets:
+        NarrowcastingClip: all
+    test:
+      config: Debug
+      targets:
+        - NarrowcastingClipUITests
+    run:
+      config: Debug
+      commandLineArguments:
+        "-mockSetup": false
+      environmentVariables:
+        _XCAppClipURL: https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw

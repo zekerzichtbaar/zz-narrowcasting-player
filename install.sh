@@ -142,6 +142,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends chrony python3 \
   python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base \
+  bluez pi-bluetooth python3-dbus python3-cryptography \
   python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav
 
@@ -201,6 +202,15 @@ elif command -v raspi-config >/dev/null 2>&1 && [[ -z "$(raspi-config nonint get
   echo "    wifi country set to ${WIFI_COUNTRY:-NL} (override: sudo WIFI_COUNTRY=XX ./install.sh)"
 fi
 [[ -n "$CHROOT" ]] || rfkill unblock wifi 2>/dev/null || true
+
+echo "==> bluetooth (wifi setup from the App Clip)"
+for f in /var/lib/systemd/rfkill/*:bluetooth; do
+  if [[ -e "$f" ]]; then echo 0 > "$f"; fi
+done
+[[ -n "$CHROOT" ]] || rfkill unblock bluetooth 2>/dev/null || true
+systemctl enable bluetooth.service >/dev/null 2>&1 || true
+systemctl enable hciuart.service >/dev/null 2>&1 || true  # Pi 4 UART adapter (pi-bluetooth)
+[[ -n "$CHROOT" ]] || systemctl start bluetooth.service 2>/dev/null || true
 
 echo "==> time sync (chrony)"
 NTP_SERVER="$(PYTHONPATH="$APP" python3 -c 'import sys; from pi_player import config; print(config.load(sys.argv[1])["ntp_server"])' "$ETC/config.toml")"

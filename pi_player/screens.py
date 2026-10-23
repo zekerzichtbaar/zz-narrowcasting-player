@@ -394,12 +394,13 @@ def identify(path, name, footer="", logo=None, rotation=0):
 
 
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
-               portal_url="http://10.42.0.1", rotation=0):
-    """Hotspot SSID + password + join-QR. ssid None -> no hotspot (no wifi adapter / dev box /
-    hotspot briefly down): show status/error, or 'connect ethernet'."""
+               portal_url="http://10.42.0.1", rotation=0, setup_url=None):
+    """Wifi setup: a QR to the App Clip (setup_url, Bluetooth) and the hotspot SSID + password as the
+    route for other phones. Without setup_url the QR joins the hotspot. Nothing to offer (no hotspot,
+    no Bluetooth) or busy without a hotspot: a notice with the status/error, or 'connect ethernet'."""
     from PIL import ImageDraw
     from .netman import wifi_qr
-    if not ssid:
+    if not (ssid or setup_url) or (status and not ssid):
         img = _notice(_canvas(portrait(rotation)), footer, logo, status or "Geen netwerk", kicker="Wifi",
                       text=error or ("Het instelnetwerk komt zo terug" if status
                                      else "Sluit een netwerkkabel aan, of wacht op de wifi-instelling"),
@@ -408,26 +409,41 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
     img = _canvas()
     d = ImageDraw.Draw(img, "RGBA")
     _head(img, d, logo, "GEEN VERBINDING", warn=True)
+    fit = W - 120 - 480 - 108 - 198
     y = 236
     _text(d, (120, y), "Wifi instellen", 84, FG, "display", "lt")
     y += 88 + 45 + 27
-    _step(d, 120, y, 1, "Scan de QR-code, of maak verbinding met:")
-    y += 27 + 18
-    _text(d, (198, y), ssid, 72, (255, 255, 255), "mono", "lt", fit=W - 120 - 480 - 108 - 198)
-    y += 72 + 24
-    _text(d, (198, y + 27), "WACHTWOORD", 22, MUTED, "mono", "lm", track=0.14)
-    _text(d, (390, y + 27), password, 48, FG, "mono", "lm")
-    y += 54 + 45 + 27
-    _step(d, 120, y, 2, "Kies op je telefoon het wifi-netwerk van het scherm")
-    y += 27 + 27
-    _text(d, (198, y), f"Geen pagina? Open {portal_url} in je browser", 25, MUTED, "mono", "lt")
+    if setup_url:
+        _step(d, 120, y, 1, "Scan de QR-code met de camera van je iPhone")
+        y += 27 + 18
+        _text(d, (198, y), "‘Scherm instellen’ opent en zet de wifi van het scherm voor je in", 27, MUTED,
+              "sans", "lt", fit=fit)
+        y += 27 + 54 + 27
+    if ssid:
+        n = 2 if setup_url else 1
+        _step(d, 120, y, n, "Andere telefoon? Verbind met het wifi-netwerk:" if setup_url
+              else "Scan de QR-code, of maak verbinding met:")
+        y += 27 + 18
+        size = 56 if setup_url else 72
+        _text(d, (198, y), ssid, size, (255, 255, 255), "mono", "lt", fit=fit)
+        y += size + 24
+        _text(d, (198, y + 24), "WACHTWOORD", 22, MUTED, "mono", "lm", track=0.14)
+        _text(d, (390, y + 24), password, 44 if setup_url else 48, FG, "mono", "lm")
+        y += 48 + 36
+        if not setup_url:
+            y += 9 + 27
+            _step(d, 120, y, 2, "Kies op je telefoon het wifi-netwerk van het scherm")
+            y += 27 + 27
+        _text(d, (198, y), f"Geen pagina? Open {portal_url} in je browser", 25, MUTED, "mono", "lt", fit=fit)
+        y += 25
     if error:
-        _text(d, (198, y + 63), error, 33, ERROR, "semi", "lt", fit=W - 120 - 480 - 108 - 198)
+        _text(d, (198, y + 38), error, 33, ERROR, "semi", "lt", fit=fit)
     elif status:
-        _text(d, (198, y + 63), status, 33, ACCENT, "semi", "lt", fit=W - 120 - 480 - 108 - 198)
+        _text(d, (198, y + 38), status, 33, ACCENT, "semi", "lt", fit=fit)
     qx, qy = W - 120 - 480, 222 + (762 - 537) // 2
-    _qr(img, wifi_qr(ssid, password), qx, qy, 480)
-    _text(d, (qx + 240, qy + 480 + 27), "Scan om te verbinden", 27, SOFT, anchor="mt")
+    _qr(img, setup_url or wifi_qr(ssid, password), qx, qy, 480)
+    _text(d, (qx + 240, qy + 480 + 27), "Scan met je camera" if setup_url else "Scan om te verbinden", 27,
+          SOFT, anchor="mt")
     _foot(img, d, footer)
     return _save(img, path, rotation)
 
@@ -466,6 +482,12 @@ if __name__ == "__main__":
     print(waiting(os.path.join(out, "waiting.png"), "Kantine links", f))
     print(waiting(os.path.join(out, "waiting-noname.png"), None, f))
     print(identify(os.path.join(out, "identify.png"), "Kantine links", f))
+    clip = "https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw"
+    print(wifi_setup(os.path.join(out, "wifi-clip.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, setup_url=clip))
+    print(wifi_setup(os.path.join(out, "wifi-clip-error.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                     setup_url=clip, error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?"))
+    print(wifi_setup(os.path.join(out, "wifi-clip-noap.png"), footer=f, setup_url=clip,
+                     error="Instelnetwerk starten mislukt — sluit een netwerkkabel aan."))
     print(wifi_setup(os.path.join(out, "wifi.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-error.png"), "Narrowcast-1E2F", "k7q4m2xa",
                      error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?", footer=f))

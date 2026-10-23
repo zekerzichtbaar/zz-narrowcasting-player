@@ -291,13 +291,14 @@ class Monitor:
 class WifiSetup:
     """Runs the hotspot + captive portal while the main loop says we are in WIFI_SETUP.
 
-    Main loop: want(bool) every tick, info() for the screen. Portal: networks, connect(), rescan().
-    All nmcli work happens on this object's own thread."""
+    Main loop: want(bool) every tick, info() for the screen. Portal and Bluetooth (blesetup): networks,
+    connect(), rescan(), joined. All nmcli work happens on this object's own thread."""
 
     HOLD_AFTER_CONNECT = 20.0  # AP stays down this long after a success, until the loop notices
 
     def __init__(self, dev_id, retry=120.0, monitor=None, port=80):
         self.ssid, self.password = hotspot_ssid(dev_id), random_password()
+        self.token = secrets.token_bytes(16)  # Bluetooth setup key, in the QR next to the password
         self.retry, self.monitor, self.port = float(retry), monitor, port
         self.networks = []
         self.status = None     # transient line, e.g. "Verbinden met X…"
@@ -309,7 +310,10 @@ class WifiSetup:
         self.portal = None
         self.iface = None
         self.scanned_at = -1e9
+        self.scan_id = 0
         self.no_cms = False
+        self.joined = None     # SSID of the last connect() that got online, until WIFI_SETUP again
+        self.attempts = 0      # finished connect() jobs, so a front end knows its attempt is done
 
     def start(self):
         threading.Thread(target=self._loop, name="wifi", daemon=True).start()
@@ -318,6 +322,8 @@ class WifiSetup:
     # called from other threads
     def want(self, on):
         if on != self.wanted:
+            if on:
+                self.joined = None
             self.wanted = on
             self.jobs.put(None)
 
@@ -328,9 +334,10 @@ class WifiSetup:
     def touch(self):
         self.activity = time.monotonic()
 
-    def connect(self, ssid, password):
+    def connect(self, ssid, password, hidden=False):
         self.touch()
-        self.jobs.put(("connect", ssid, password))
+        self.joined = None
+        self.jobs.put(("connect", ssid, password, hidden))
 
     def rescan(self):
         self.touch()
@@ -351,6 +358,7 @@ class WifiSetup:
         if nets or not self.networks:
             self.networks = nets
         self.scanned_at = time.monotonic()
+        self.scan_id += 1
         log.info("wifi scan: %d networks", len(nets))
 
     def _up(self):
@@ -411,21 +419,27 @@ class WifiSetup:
                     hold = 0.0
                     continue
                 if job and job[0] == "connect":
-                    _, ssid, pw = job
+                    _, ssid, pw, hidden = job
                     time.sleep(2)  # let the portal's answer reach the phone first
                     self.status, self.error = f"Verbinden met {ssid}…", None
                     self._down()
                     sec = next((n["security"] for n in self.networks if n["ssid"] == ssid), None)
-                    ok, err = connect(self.iface, ssid, pw, sec or "", hidden=sec is None)
-                    self.status = None
-                    if ok and self._online():
-                        log.info("wifi: connected to %r", ssid)
-                        hold = time.monotonic() + self.HOLD_AFTER_CONNECT
-                        continue
-                    if ok and self.no_cms:
+                    ok, err = connect(self.iface, ssid, pw, sec or "", hidden=hidden or sec is None)
+                    if ok:
+                        self.status = f"Verbonden met {ssid}, server controleren…"
+                    online = ok and self._online()
+                    if online:
+                        self.joined = ssid
+                    elif ok and self.no_cms:
                         self.error = f"Verbonden met {ssid}, maar de server is niet bereikbaar (geen internet?)"
                     else:
                         self.error = f"Verbinden met {ssid} mislukt: {err or 'geen verbinding'}"
+                    self.status = None
+                    self.attempts += 1
+                    if online:
+                        log.info("wifi: connected to %r", ssid)
+                        hold = time.monotonic() + self.HOLD_AFTER_CONNECT
+                        continue
                     last_try = time.monotonic()
                 elif job and job[0] == "rescan":
                     time.sleep(2)
