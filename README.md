@@ -44,8 +44,24 @@ and wifi country (`NL`) already set. No SSH, no ethernet and no install step nee
      *"Would you like to apply OS customisation settings?"*, choose **No**. Customisation
      overwrites the image's user, SSH and wifi settings.
    - **balenaEtcher:** *Flash from file* → pick the `.img.xz` → select the card → *Flash*.
-4. **First boot:** put the card in a Pi 4, connect HDMI, power on. Pi OS expands the root
-   filesystem to the full card and **reboots once by itself**. After that the screen shows the
+4. **Wifi in advance (optional, no phone needed):** take the card out and put it back in the
+   laptop. A drive called `bootfs` appears (the FAT boot partition, readable on Windows, macOS and
+   Linux). Open `wifi.txt` on it in any text editor (Notepad, TextEdit in plain-text mode) and fill
+   in the customer's wifi:
+
+   ```
+   ssid=Kantine
+   password=het-wachtwoord
+   hidden=no
+   ```
+
+   Everything after the `=` counts, so spaces and characters like `:` or `#` in the name are fine
+   (no quotes needed). Leave `password` empty for an open network, use `hidden=yes` for a network
+   that does not broadcast its name. Save, eject the drive properly. Skip this step and the
+   customer sets the wifi with a phone ([section 2](#2-first-time-setup-on-the-screen)).
+5. **First boot:** put the card in a Pi 4, connect HDMI, power on. Pi OS expands the root
+   filesystem to the full card and **reboots once by itself**. With a filled-in `wifi.txt` the
+   Pi joins that network and goes straight to the pairing code; otherwise the screen shows the
    `WIFI_SETUP` screen. Continue with [section 2](#2-first-time-setup-on-the-screen).
 
 **Default login:** user **`pi`**, password **`pi-player`**. SSH is enabled. The password is the
@@ -137,12 +153,30 @@ At any moment the screen shows exactly one of these four states:
 
 | State | When | Screen |
 |---|---|---|
-| `WIFI_SETUP` | offline: no network, or the CMS unreachable | QR to the App Clip, hotspot SSID + password |
+| `WIFI_SETUP` | offline: no network, or the CMS unreachable | QR to the App Clip, hotspot SSID + password (`setup_url = ""`: QR to join the hotspot, QR + address of the setup page) |
 | `PAIRING` | network, not paired | pairing code + QR to the CMS pairing page |
 | `WAITING` | paired, nothing published | "Waiting for content" + screen name |
 | `PLAYING` | paired + video | the synced MP4 |
 
-Walkthrough on a fresh Pi with no ethernet:
+There are two ways to get a Pi on wifi. Both keep working side by side:
+
+- **`wifi.txt` on the card** (Zeker Zichtbaar prepares the card, see [section 0](#0-flash-the-image)
+  step 4). At every agent start the Pi looks for `/boot/firmware/wifi.txt`. A filled-in file is
+  saved as the NetworkManager connection `pi-player-<ssid>` (autoconnect, like one set via the
+  phone) and the Pi joins it before the hotspot can start. Right after saving, the file is renamed
+  to `wifi.txt.done` with `password=***`, so no readable password stays on the FAT partition (the
+  NetworkManager copy is root-only on the ext4 partition). Working ethernet wins: the network is
+  then only saved, for when the cable goes. If joining fails (wrong password, out of range), the
+  connection stays saved (the `wifi_retry` picks it up once it is in range), the error shows on the
+  wifi-setup screen (e.g. *wifi.txt: verbinden met Kantine mislukt: Verkeerd wachtwoord?*) and the
+  hotspot starts as usual, so the phone routes below can still fix it. An unusable file (no `ssid=`,
+  a password under 8 characters) is masked and renamed too, with the reason on the screen. The empty
+  template that comes with the image is left alone. To change the wifi later the same way, write a
+  new `wifi.txt` to the card and boot.
+- **The phone**, the default when a customer powers the Pi up themselves: an iPhone with the App
+  Clip over Bluetooth, any other phone via the hotspot.
+
+Walkthrough of the phone routes on a fresh Pi with no ethernet:
 
 1. **Wifi setup.** About 30 s after boot, the screen shows *Wifi instellen* with a QR code,
    the hotspot name `Narrowcast-XXXX` and a password. The last 4 characters of the name come
@@ -155,17 +189,24 @@ Walkthrough on a fresh Pi with no ethernet:
    network the whole time. Protocol: [`docs/ble-setup.md`](docs/ble-setup.md).
 3. **Other phones** (or an iPhone without the App Clip): join the hotspot by hand; scanning the
    QR on Android opens a CMS page with the same steps. The phone's captive-portal sheet or
-   notification should open the setup page. If it doesn't, browse to **http://10.42.0.1**.
-   Pick your network (or type a hidden SSID), enter its password and tap connect. The
-   hotspot goes down while the Pi tries to join. If that fails, the hotspot comes back and
-   both the screen and the page show the error. Rejoin and try again.
-   *Rescan* drops the hotspot briefly to refresh the network list, because the Pi 4 can't
-   scan and run a hotspot at the same time (the App Clip's refresh does the same).
-4. **Pairing.** Once the Pi is online, the screen shows a short code (`K7Q-4M2`) and a QR
+   notification should open the setup page by itself, usually within a few seconds: the hotspot's
+   DHCP hands out the portal address (option 114, RFC 8910), every DNS name resolves to the Pi,
+   and https probes are refused at once instead of timing out. **Nothing opens** (Android with
+   *Private DNS*, a phone that stays on mobile data, an older phone): browse to
+   **http://10.42.0.1** while still on the hotspot. With `setup_url = ""` (no Bluetooth) the
+   screen shows two QR codes instead: **code 1** joins the hotspot, **code 2** opens that page.
+4. On the setup page, pick your network (or type a hidden SSID), enter its password and tap
+   *Verbinden*. The page (in Dutch, like the tv screens) says what happens next: the hotspot goes
+   down while the Pi tries to join, the phone falls back to its own wifi or mobile data and the
+   page stops answering, so watch the tv. If joining fails, the hotspot comes back within a minute
+   and both the screen and the page show the error (e.g. *Verkeerd wachtwoord?*). Rejoin and try
+   again. *Lijst vernieuwen* drops the hotspot briefly to refresh the network list, because the
+   Pi 4 can't scan and run a hotspot at the same time (the App Clip's refresh does the same).
+5. **Pairing.** Once the Pi is online, the screen shows a short code (`K7Q-4M2`) and a QR
    code that opens the CMS pairing page with the code filled in. Enter the code in the CMS
    and choose a name and group for the screen. Codes expire after about 10 minutes and are
    replaced on the screen automatically.
-5. **Waiting / playing.** No reboot is needed. The screen moves to *Waiting for content*, or
+6. **Waiting / playing.** No reboot is needed. The screen moves to *Waiting for content*, or
    starts playing straight away if its group already has a published video.
 
 If ethernet is connected (and reaches the CMS), the Pi skips wifi setup.
@@ -185,7 +226,9 @@ Wifi setup also comes back on its own:
 - **Network lost while pairing or waiting:** the wifi-setup screen appears after 30 s.
 - **While the hotspot is up:** every `wifi_retry` (2 min) the Pi drops the hotspot briefly
   and retries its saved networks. When a network (or ethernet) is back and the CMS answers, it
-  returns to normal.
+  returns to normal. The retry waits while someone is setting up: after a request to the setup
+  page, and as long as a phone is connected to the hotspot (`iw dev wlan0 station dump`), so
+  the hotspot never drops away under a phone mid-setup.
 
 **Unpairing in the CMS** (or a revoked token) sends the screen back to the pairing code.
 
@@ -317,20 +360,33 @@ Rendering the PNGs needs Pillow and qrcode; on a Mac without them:
 
 ## 8. Hardware test plan
 
-**Wifi setup** (phone needed; test iPhone and Android):
+**Wifi setup via the hotspot** (phone needed; test iPhone and Android; set `setup_url = ""` in
+`/etc/pi-player/config.toml` for the two-code screen, with the App Clip QR join the hotspot by hand):
 
 1. Run `sudo ./install.sh` on a Pi with ethernet. Unplug the ethernet and make sure there is
    no saved wifi (`sudo pi-player reset`).
-2. Within about 30 s the screen shows *Set up wifi* with `Narrowcast-XXXX`, a password and a
-   QR code.
-3. Scan the QR code with an iPhone and with an Android phone. The captive sheet or
-   notification should open the page. If it doesn't, browse to http://10.42.0.1.
-4. Pick the network and enter a wrong password first. Within about 1 min (after rejoining),
-   the screen and the page should both show *Verkeerd wachtwoord?*.
-5. Enter the correct password. The screen should show the pairing code.
-6. Turn that wifi AP off. The setup screen should come back after 30 s (or 10 min if
+2. Within about 30 s the screen shows *Wifi instellen* with `Narrowcast-XXXX`, a password,
+   code 1 (join) and code 2 (setup page) plus `http://10.42.0.1`.
+3. On the Pi: `cat /etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf` shows
+   `address=/#/10.42.0.1` and `dhcp-option=114,"http://10.42.0.1/"`. From a laptop joined to the
+   hotspot: `curl -m 3 https://10.42.0.1` fails at once with *Connection refused* (not a
+   time-out), and `curl -H 'Accept: application/captive+json' http://10.42.0.1/` answers
+   `{"captive": true, ...}`.
+4. Scan code 1 with an iPhone (iOS 14+) and with an Android 11+ phone. The captive sheet or
+   notification should open the Dutch setup page within about 10 s, without touching anything.
+5. On an Android phone with *Private DNS* on (Settings > Network > Private DNS, e.g.
+   `dns.google`) and/or mobile data on, join via code 1: if no page opens, scan code 2. It
+   should open http://10.42.0.1 with the setup page.
+6. Join the hotspot with a phone and leave it there without opening the page for more than
+   3 minutes: the hotspot must stay up (the log says `phone on the setup hotspot, retry
+   postponed`). Then save a wifi that is out of range and repeat: the hotspot still stays up while the phone is on it. Disconnect the phone: about 2 min later the Pi retries its saved networks (without a saved wifi it never drops the hotspot to retry).
+7. Pick the network and enter a wrong password first. The page says the hotspot goes off and to
+   watch the tv. Within about 1 min the hotspot comes back, and the screen and (after
+   rejoining) the page show *Verkeerd wachtwoord?*.
+8. Enter the correct password. The screen should show the pairing code.
+9. Turn that wifi AP off. The setup screen should come back after 30 s (or 10 min if
    playing). Turn the AP back on: the Pi should rejoin within `wifi_retry` (2 min).
-7. Plug in ethernet while the setup screen is showing. It should leave setup within about 5 s.
+10. Plug in ethernet while the setup screen is showing. It should leave setup within about 5 s.
 
 In `journalctl -u pi-player -f`, look for `hotspot ... up`, `portal on` and `wifi: connected`.
 
@@ -347,6 +403,21 @@ clip from `ios/` and add a Local Experience for `https://app.zekerzichtbaar.tv/s
 5. Two screens side by side: each QR reaches only its own screen.
 6. Restart the agent (`sudo systemctl restart pi-player`) and use the old QR: the clip says the
    code is outdated; the new QR works.
+
+**`wifi.txt`** (SD-card reader + laptop):
+
+1. Flash the image, fill in `wifi.txt` on `bootfs` with a reachable network (try one with `:` or
+   `#` in its name, and save once from Windows Notepad: BOM + CRLF), boot without ethernet. The Pi
+   should reach the pairing code without the wifi-setup screen (or only briefly); the log says
+   `wifi.txt: connected to '...'`.
+2. Put the card back in the laptop: only `wifi.txt.done` is there, with `password=***`.
+   `sudo nmcli connection show` on the Pi lists `pi-player-<ssid>`.
+3. Write a `wifi.txt` with a wrong password and boot: the wifi-setup screen shows
+   *wifi.txt: verbinden met ... mislukt: Verkeerd wachtwoord?* with the hotspot, and setting the
+   wifi with a phone still works. Same with a network that is switched off (*Netwerk niet
+   bereikbaar.*); switch it back on: the Pi joins it at the next `wifi_retry`.
+4. With ethernet plugged in and a filled-in `wifi.txt`: the Pi stays on ethernet (log: `saved,
+   ethernet is connected`); unplug the cable and the wifi takes over.
 
 **Pairing and playback:** pair via the code (expect WAITING or PLAYING with no reboot). Reboot
 and check that the video plays fullscreen, muted and looping, with no console text or cursor.
@@ -390,8 +461,23 @@ Run `sudo systemctl kill pi-player`: playback should be back within
 - **No hotspot / wifi missing:** wifi is rfkill-blocked until a country is set. Run
   `sudo raspi-config nonint get_wifi_country` and `rfkill list`. Fix it with
   `sudo WIFI_COUNTRY=XX ./install.sh`, or `sudo raspi-config nonint do_wifi_country XX && sudo rfkill unblock wifi`.
-- **Captive page doesn't open on the phone:** browse to **http://10.42.0.1** by hand. Some
-  phones only show a notification, and some stay on mobile data. Turn mobile data off.
+- **Captive page doesn't open on the phone:** stay on the hotspot and scan code 2 on the tv (only
+  without `setup_url`), or browse to **http://10.42.0.1** by hand. Usual causes: Android *Private DNS* (the phone asks
+  its own DNS server over TLS, so it never sees the Pi's answer: turn it off or use code 2), a
+  phone that stays on mobile data because the hotspot has no internet (turn mobile data off,
+  or answer "keep using this network"), and phones that only show a notification instead of a
+  sheet. Check the Pi side with step 3 of the [hardware test plan](#8-hardware-test-plan): a
+  missing `dhcp-option=114` line means `install.sh` did not run after the update, and an https
+  probe that hangs instead of being refused means something on the Pi drops port 443 (a
+  firewall): it must refuse.
+- **Hotspot keeps disappearing during setup:** it should only go down for *Lijst vernieuwen*, a
+  connect attempt or the `wifi_retry`, and the retry waits while a phone is connected. Check
+  `iw dev wlan0 station dump` on the Pi (no `iw` = the retry can't see phones; `sudo apt install iw`).
+- **`wifi.txt` did nothing:** it must be called exactly `wifi.txt` (Windows may hide a second
+  `.txt`: `wifi.txt.txt` is ignored) and sit in the root of `bootfs`. The agent reads it at start
+  only, so reboot after writing it. Still there after boot = not read: check
+  `journalctl -u pi-player | grep wifi.txt`. A `wifi.txt.done` means it was read; the error (if any)
+  is on the wifi-setup screen and in the log. A Pi on ethernet only saves the network.
 - **Joined wifi but stuck at "Connecting to the CMS…":** the wifi has no route to the CMS.
   Check `cms_url` and the network. `sudo pi-player reset` (or plugging in ethernet) gets you
   back to setup.

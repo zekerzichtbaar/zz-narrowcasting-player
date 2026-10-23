@@ -1,13 +1,16 @@
 """Captive portal served on the setup hotspot (stdlib http.server, runs inside the agent).
 
 Every unknown host/path (the iOS/Android/Windows captive-portal probes included, DNS is
-wildcarded to us) gets a redirect to the setup page, so phones open it by themselves.
+wildcarded to us) gets a redirect to the setup page, so phones open it by themselves. DHCP
+option 114 (install.sh) points at "/" too; a client that asks it for `application/captive+json`
+(RFC 8908) gets the small API answer instead of the page.
 
 Self-check:                           python3 -m pi_player.portal
 Dev preview with a fake network list: python3 -m pi_player.portal serve [PORT]
 """
 import html
 import http.server
+import json
 import logging
 import os
 import threading
@@ -114,6 +117,11 @@ Wachtwoord tonen</label>
 </main></body></html>"""
 
 
+def captive_json(base):
+    """RFC 8908 API answer for the option 114 URI: captive, and where the page is."""
+    return json.dumps({"captive": True, "user-portal-url": base + "/"}).encode()
+
+
 def validate(form):
     """form (parse_qs dict) -> (ssid, password, None) or (None, None, error)."""
     ssid = (form.get("other", [""])[0].strip() or form.get("ssid", [""])[0])
@@ -165,6 +173,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self._ours() or path != "/":
             return self._redirect()  # captive-portal probes land here
         c = self.server.ctrl
+        if "application/captive+json" in (self.headers.get("Accept") or ""):
+            return self._send(200, captive_json(self.server.base), [("Content-Type", "application/captive+json")])
         self._page(error=c.error, status=c.status)
 
     do_HEAD = do_GET
@@ -187,10 +197,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if err:
             return self._page(error=err)
         c.connect(ssid, pw)
-        self._page(notice=(
-            f"Het scherm verbindt nu met <b>{html.escape(ssid)}</b>. Het instelnetwerk gaat uit, je "
-            "kunt deze pagina sluiten. Lukt het niet, dan komt het instelnetwerk binnen een minuut "
-            "terug met een melding op het scherm; maak opnieuw verbinding en probeer het nog eens."))
+        self._page(notice=connecting_notice(ssid))
+
+
+def connecting_notice(ssid):
+    """What the page says after "Verbinden": the hotspot goes away, so this page stops answering."""
+    return (f"Het scherm maakt nu verbinding met <b>{html.escape(ssid)}</b>.<br><br>"
+            "Het instelnetwerk gaat zo uit. Je telefoon valt dan terug op zijn eigen wifi of mobiele "
+            "data, en deze pagina reageert niet meer. Dat is goed: je kunt hem sluiten.<br><br>"
+            "<b>Kijk op de tv.</b> Lukt het, dan verschijnt daar een koppelcode. Lukt het niet, dan komt "
+            "het instelnetwerk binnen een minuut terug met de fout op de tv. Verbind dan opnieuw en "
+            "probeer het nog eens.")
 
 
 class Portal:
@@ -234,6 +251,12 @@ def _selfcheck():
     p = page("Narrowcast-1E2F", _FakeCtrl.networks, error="Bad <pw>")
     assert "Office &lt;5G&gt;" in p and "Bad &lt;pw&gt;" in p and p.count('type="radio"') == 3
     assert "Geen netwerken gevonden" in page("x", [])
+    assert 'lang="nl"' in p and ">Verbinden</button>" in p and "Lijst vernieuwen" in p and "🔒" in p
+    n = connecting_notice("Kantine <5G>")
+    assert "Kantine &lt;5G&gt;" in n and "instelnetwerk gaat zo uit" in n and "Kijk op de tv" in n
+    assert "eigen wifi" in n and "binnen een minuut terug" in n
+    assert json.loads(captive_json("http://10.42.0.1")) == {"captive": True,
+                                                           "user-portal-url": "http://10.42.0.1/"}
     assert validate({"ssid": ["Kantine"], "password": ["secret123"]}) == ("Kantine", "secret123", None)
     assert validate({"ssid": ["Kantine"], "other": [" Hidden "], "password": [""]}) == ("Hidden", "", None)
     assert validate({"password": ["secret123"]})[2]
@@ -262,6 +285,13 @@ def _selfcheck():
     r = urllib.request.urlopen(f"http://127.0.0.1:{port}/connect",
                                data=b"ssid=Kantine&password=short").read().decode()
     assert "8 tot 63" in r
+    api = urllib.request.urlopen(urllib.request.Request(
+        f"http://127.0.0.1:{port}/", headers={"Accept": "application/captive+json"}))
+    assert api.headers["Content-Type"] == "application/captive+json"
+    assert json.loads(api.read())["user-portal-url"] == f"http://127.0.0.1:{port}/"
+    r = urllib.request.urlopen(f"http://127.0.0.1:{port}/connect",
+                               data=b"ssid=Kantine&password=secret123").read().decode()
+    assert "instelnetwerk gaat zo uit" in r and "Kijk op de tv" in r
     srv.stop()
     print("portal self-check OK")
 

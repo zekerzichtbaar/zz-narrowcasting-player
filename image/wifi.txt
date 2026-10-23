@@ -1,0 +1,15 @@
+# Wifi voor dit scherm (pi-player)
+#
+# Vul hieronder de wifi in en sla het bestand op. Bij het opstarten maakt het
+# scherm verbinding. Daarna heet dit bestand wifi.txt.done en staat het
+# wachtwoord er niet meer in (password=***).
+#
+# - Alles na "=" telt, ook spaties en tekens als : of # in de naam.
+# - Open netwerk zonder wachtwoord: laat password leeg.
+# - Verborgen netwerk (naam wordt niet uitgezonden): zet hidden=yes.
+# - Lukt het niet, dan toont het scherm de fout en kun je de wifi alsnog
+#   met je telefoon instellen.
+
+ssid=
+password=
+hidden=no

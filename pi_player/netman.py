@@ -21,7 +21,7 @@ log = logging.getLogger("pi-player")
 
 PREFIX = "pi-player-"
 HOTSPOT = PREFIX + "hotspot"
-HOTSPOT_IP = "10.42.0.1"  # also in install.sh (dnsmasq wildcard) — keep in sync
+HOTSPOT_IP = "10.42.0.1"  # also in install.sh (dnsmasq wildcard + option 114): keep in sync
 PW_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # no 0/o/1/l/i: read off a screen, typed on a phone
 WIFI_TYPES = ("wifi", "802-11-wireless")
 NET_CHECK_EVERY = 5.0
@@ -53,6 +53,10 @@ def split_t(line):
 def parse_devices(text):
     """`nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device` -> [(device, type, state, connection)]."""
     return [tuple(f) for f in (split_t(l) for l in text.splitlines() if l) if len(f) == 4]
+
+
+def ethernet_up(devices):
+    return any(t == "ethernet" and s == "connected" for _, t, s, _ in devices)
 
 
 def is_online(devices):
@@ -116,6 +120,11 @@ def friendly_error(stderr):
     return "Verbinden mislukt."
 
 
+def parse_stations(text):
+    """`iw dev <iface> station dump` -> number of associated clients (phones on the hotspot)."""
+    return sum(1 for l in text.splitlines() if l.startswith("Station "))
+
+
 # --- nmcli ----------------------------------------------------------------------------------
 
 def available():
@@ -174,12 +183,25 @@ def start_hotspot(iface, ssid, password):
     return r.returncode == 0, r.stderr.strip()
 
 
+def stations(iface):
+    """Clients on our hotspot. 0 when iw is missing or fails: the retry then runs as before."""
+    if not iface or not shutil.which("iw"):
+        return 0
+    try:
+        r = subprocess.run(["iw", "dev", iface, "station", "dump"], capture_output=True, text=True,
+                           timeout=10)
+    except subprocess.TimeoutExpired:
+        return 0
+    return parse_stations(r.stdout) if r.returncode == 0 else 0
+
+
 def stop_hotspot():
     nm("connection", "down", HOTSPOT, timeout=20)
 
 
-def connect(iface, ssid, password, security="", hidden=False):
-    """Create pi-player-<ssid> and bring it up. Returns (ok, error message)."""
+def connect(iface, ssid, password, security="", hidden=False, keep=False, up=True):
+    """Create pi-player-<ssid> and bring it up (up=False: only save it). Returns (ok, error message).
+    A failed connection is deleted again, unless keep (wifi.txt: maybe in range later)."""
     name = PREFIX + ssid
     nm("connection", "delete", name, timeout=15)
     args = ["connection", "add", "type", "wifi", "ifname", iface, "con-name", name, "ssid", ssid,
@@ -190,12 +212,13 @@ def connect(iface, ssid, password, security="", hidden=False):
     if hidden:
         args += ["802-11-wireless.hidden", "yes"]
     r = nm(*args, timeout=15)
-    if r.returncode == 0:
+    if r.returncode == 0 and up:
         r = nm("--wait", "30", "connection", "up", name, timeout=45)
     if r.returncode == 0:
         return True, None
     log.warning("wifi connect %r failed: %s", ssid, r.stderr.strip())
-    nm("connection", "delete", name, timeout=15)
+    if not keep:
+        nm("connection", "delete", name, timeout=15)
     return False, friendly_error(r.stderr)
 
 
@@ -296,16 +319,19 @@ class WifiSetup:
 
     HOLD_AFTER_CONNECT = 20.0  # AP stays down this long after a success, until the loop notices
 
-    def __init__(self, dev_id, retry=120.0, monitor=None, port=80):
+    def __init__(self, dev_id, retry=120.0, monitor=None, port=80, clients=None, wifi_txt=None):
         self.ssid, self.password = hotspot_ssid(dev_id), random_password()
         self.token = secrets.token_bytes(16)  # Bluetooth setup key, in the QR next to the password
         self.retry, self.monitor, self.port = float(retry), monitor, port
+        self.clients = clients or (lambda: stations(self.iface))
         self.networks = []
         self.status = None     # transient line, e.g. "Verbinden met X…"
         self.error = None      # last failure, shown on screen + page
+        self.file_error = None  # wifi.txt failed at start: shown until we are online or a phone connects
+        self.wifi_txt = wifi_txt  # path; None = the boot partition (wifitxt.default_path())
         self.ap_up = False
         self.wanted = False
-        self.activity = 0.0    # last portal request (postpones the retry while someone is busy)
+        self.activity = 0.0    # last portal request or connected phone (postpones the retry)
         self.jobs = queue.Queue()
         self.portal = None
         self.iface = None
@@ -329,7 +355,7 @@ class WifiSetup:
 
     def info(self):
         return (self.ssid if self.ap_up else None, self.password if self.ap_up else None,
-                self.status, self.error)
+                self.status, self.error or self.file_error)
 
     def touch(self):
         self.activity = time.monotonic()
@@ -344,6 +370,17 @@ class WifiSetup:
         self.jobs.put(("rescan",))
 
     # worker
+    def _retry_due(self, now, last_try):
+        """Time to drop the hotspot and retry saved networks? Never while a phone is on it: the
+        retry would kick it off mid-setup, so a connected client counts as activity."""
+        if not self.ap_up or now - max(last_try, self.activity) < self.retry:
+            return False
+        if self.clients():
+            log.info("wifi: phone on the setup hotspot, retry postponed")
+            self.activity = now
+            return False
+        return True
+
     def _down(self):
         if self.portal:
             self.portal.stop()
@@ -365,7 +402,7 @@ class WifiSetup:
         from . import portal
         self.iface = self.iface or wifi_iface()
         if not self.iface:
-            self.error = "Geen wifi-adapter gevonden — sluit een netwerkkabel aan."
+            self.error = "Geen wifi-adapter gevonden. Sluit een netwerkkabel aan."
             return False
         self.status = self.status or "Wifi-instelling starten…"
         if time.monotonic() - self.scanned_at > 10:  # retry path just scanned
@@ -374,7 +411,7 @@ class WifiSetup:
         self.status = None
         if not ok:
             log.error("hotspot failed: %s", err)
-            self.error = "Instelnetwerk starten mislukt — sluit een netwerkkabel aan."
+            self.error = "Het instelnetwerk start niet. Sluit een netwerkkabel aan."
             return False
         self.ap_up = True
         log.info("hotspot %s up", self.ssid)
@@ -404,8 +441,63 @@ class WifiSetup:
         log.warning("wifi: connected, but the CMS is not reachable")
         return False
 
+    def _boot_file(self):
+        """wifi.txt on the boot partition, once at start, before the hotspot can come up (this
+        thread does all nmcli work, so `want(True)` waits for it). Saves pi-player-<ssid> (kept when
+        it fails: maybe in range later, the retry picks it up), masks the file, then connects
+        unless ethernet already works. Returns a hold-until time like a portal connect."""
+        from . import wifitxt
+        path = self.wifi_txt or wifitxt.default_path()
+        cfg, err = wifitxt.read(path)
+        if not cfg and not err:
+            return 0.0
+        if err:
+            wifitxt.retire(path)
+            self.file_error = f"wifi.txt: {err}"
+            log.error("wifi.txt: %s", err)
+            return 0.0
+        ssid = cfg["ssid"]
+        log.info("wifi.txt: network %r%s", ssid, " (hidden)" if cfg["hidden"] else "")
+        self.status = f"Wifi uit wifi.txt: verbinden met {ssid}…"
+        try:
+            self.iface = self.iface or wifi_iface()
+            if not self.iface:
+                self.file_error = "wifi.txt: geen wifi-adapter gevonden"
+                return 0.0
+            eth = ethernet_up(devices())
+            sec = ""
+            if not eth:
+                self._scan()
+                sec = next((n["security"] for n in self.networks if n["ssid"] == ssid), "")
+            ok, err = connect(self.iface, ssid, cfg["password"], sec, hidden=cfg["hidden"], keep=True,
+                              up=False)
+            if not wifitxt.retire(path):
+                log.warning("wifi.txt: could not rename %s to wifi.txt.done", path)
+            if not ok:
+                self.file_error = f"wifi.txt: {ssid} opslaan mislukt: {err}"
+                return 0.0
+            if eth:
+                log.info("wifi.txt: %r saved, ethernet is connected so not switching", ssid)
+                return 0.0
+            r = nm("--wait", "30", "connection", "up", PREFIX + ssid, timeout=45)
+            if r.returncode == 0 and self._online():
+                log.info("wifi.txt: connected to %r", ssid)
+                return time.monotonic() + self.HOLD_AFTER_CONNECT
+            if r.returncode == 0 and self.no_cms:
+                self.file_error = f"wifi.txt: verbonden met {ssid}, maar de server is niet bereikbaar (geen internet?)"
+            else:
+                self.file_error = f"wifi.txt: verbinden met {ssid} mislukt: {friendly_error(r.stderr) if r.returncode else 'geen verbinding'}"
+            log.error("%s (%s)", self.file_error, r.stderr.strip())
+            return 0.0
+        finally:
+            self.status = None
+
     def _loop(self):
         last_try = hold = 0.0
+        try:
+            hold = self._boot_file()
+        except Exception as e:  # never keep the hotspot from starting
+            log.exception("wifi.txt: %s", e)
         while True:
             try:
                 job = self.jobs.get(timeout=1)
@@ -416,10 +508,13 @@ class WifiSetup:
                 if not self.wanted:
                     self._down()
                     self.status = self.error = None
+                    if self.monitor and self.monitor.ok:
+                        self.file_error = None
                     hold = 0.0
                     continue
                 if job and job[0] == "connect":
                     _, ssid, pw, hidden = job
+                    self.file_error = None
                     time.sleep(2)  # let the portal's answer reach the phone first
                     self.status, self.error = f"Verbinden met {ssid}…", None
                     self._down()
@@ -446,7 +541,7 @@ class WifiSetup:
                     self.status = "Netwerken zoeken…"
                     self._down()
                     self.status = None
-                elif self.ap_up and now - max(last_try, self.activity) >= self.retry:
+                elif self._retry_due(now, last_try):
                     last_try = now
                     if not saved_wifi():  # fresh screen: dropping the AP to scan helps nobody
                         continue
@@ -498,8 +593,124 @@ def _selfcheck():
     assert friendly_error("Error: Connection activation failed: Secrets were required, but not "
                           "provided.") == "Verkeerd wachtwoord?"
     assert friendly_error("Error: No network with SSID 'x' found.") == "Netwerk niet bereikbaar."
+    _selfcheck_clients()
+    _selfcheck_wifi_txt()
     _selfcheck_online()
     print("netman self-check OK")
+
+
+def _selfcheck_clients():
+    """A phone on the hotspot postpones the saved-network retry, like portal activity does."""
+    dump = ("Station 4a:1b:2c:3d:4e:5f (on wlan0)\n\tinactive time:\t1200 ms\n\trx bytes:\t51234\n"
+            "\tsignal:  \t-48 dBm\n\tauthorized:\tyes\n\tassociated:\tyes\n")
+    assert parse_stations("") == 0 and parse_stations(dump) == 1
+    assert parse_stations(dump + dump.replace("4a:1b", "9e:8d")) == 2
+    seen = {"dump": ""}
+    w = WifiSetup("pi-00000000abcd1e2f", retry=120, clients=lambda: parse_stations(seen["dump"]))
+    w.ap_up = True
+    assert not w._retry_due(100.0, 0.0)  # within retry
+    assert w._retry_due(130.0, 0.0)  # nobody on the hotspot: retry as before
+    seen["dump"] = dump
+    assert not w._retry_due(130.0, 0.0) and w.activity == 130.0  # phone connected: postponed
+    assert not w._retry_due(240.0, 0.0)  # still within retry of that sighting
+    assert not w._retry_due(500.0, 0.0) and w.activity == 500.0  # phone still there after minutes
+    seen["dump"] = ""
+    assert not w._retry_due(600.0, 0.0) and w._retry_due(620.0, 0.0)  # phone gone: full retry later
+    w.ap_up = False
+    assert not w._retry_due(1e6, 0.0)  # no hotspot, nothing to retry
+
+
+def _selfcheck_wifi_txt():
+    """wifi.txt at start, with a fake nmcli and a temp boot partition."""
+    import os
+    import tempfile
+    global nm
+    real_nm = nm
+    calls = []
+    fake = {"devices": "wlan0:wifi:disconnected:\neth0:ethernet:unavailable:\n",
+            "up_rc": 0, "up_err": ""}
+
+    def fake_nm(*args, timeout=30):
+        calls.append(args)
+        out, rc, err = "", 0, ""
+        if args[-1] == "device" and "DEVICE,TYPE,STATE,CONNECTION" in args:
+            out = fake["devices"]
+            if fake["up_rc"] == 0 and any("up" in c and "pi-player-Kantine" in c for c in calls):
+                out = "wlan0:wifi:connected:pi-player-Kantine\n"
+        elif "wifi" in args and "list" in args:
+            out = "Kantine: BCS #2:70:WPA2 WPA3\nKantine:60:WPA3\n"
+        elif "up" in args and args[-1] != HOTSPOT:
+            rc, err = fake["up_rc"], fake["up_err"]
+        return subprocess.CompletedProcess(args, rc, out, err)
+
+    class Mon:
+        ok = False
+
+        def cms_ok(self):
+            return True
+
+        def poke(self):
+            pass
+
+    def run(text, wanted=False):  # -> (WifiSetup, boot dir)
+        calls.clear()
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "wifi.txt")
+        if text is not None:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        w = WifiSetup("pi-00000000abcd1e2f", monitor=Mon(), wifi_txt=path)
+        if wanted:  # offline from the start: the hotspot is wanted before wifi.txt is done
+            w.wanted = True
+            w._up = lambda: (calls.append(("HOTSPOT",)), setattr(w, "ap_up", True)) and True
+            w._scan_real, w._scan = w._scan, lambda: (calls.append(("SCAN",)), w._scan_real())
+            threading.Thread(target=w._loop, daemon=True).start()
+            for _ in range(50):
+                if ("HOTSPOT",) in calls:
+                    break
+                time.sleep(0.05)
+        else:
+            w._boot_file()
+        return w, d
+
+    def added(c):
+        return c[:2] == ("connection", "add")
+
+    nm = fake_nm
+    try:
+        w, d = run(None)
+        assert calls == [] and w.file_error is None and os.listdir(d) == []  # no file: nothing happens
+        w, d = run("# ssid=\n# password=\n")
+        assert calls == [] and os.listdir(d) == ["wifi.txt"]  # the empty template stays
+        # success: saved (autoconnect) + up, file masked, hold so the hotspot does not start
+        w, d = run("ssid=Kantine\r\npassword=geheim123\r\n")
+        add = next(c for c in calls if added(c))
+        assert "pi-player-Kantine" in add and "geheim123" in add and "sae" in add, add  # WPA3-only in scan
+        assert ("--wait", "30", "connection", "up", "pi-player-Kantine") in calls
+        assert w.file_error is None and os.listdir(d) == ["wifi.txt.done"]
+        with open(os.path.join(d, "wifi.txt.done")) as f:
+            assert "password=***" in f.read()
+        # ethernet works: saved, not brought up, no scan needed
+        fake["devices"] = "eth0:ethernet:connected:Wired connection 1\nwlan0:wifi:disconnected:\n"
+        w, d = run("ssid=Kantine\npassword=geheim123\n")
+        assert any(added(c) for c in calls) and not any("up" in c for c in calls), calls
+        assert not any("list" in c for c in calls) and os.listdir(d) == ["wifi.txt.done"]
+        # wrong password, offline: kept, error on the screen, then the normal hotspot
+        fake["devices"] = "wlan0:wifi:disconnected:\n"
+        fake["up_rc"], fake["up_err"] = 4, "Error: Secrets were required, but not provided."
+        w, d = run("ssid=Kantine\npassword=fout12345\n", wanted=True)
+        i = calls.index(next(c for c in calls if added(c)))
+        assert ("HOTSPOT",) in calls[i:], calls  # wifi.txt first, the hotspot after it
+        assert ("connection", "delete", "pi-player-Kantine") not in calls[i:], calls  # kept for later
+        assert w.info()[3] == "wifi.txt: verbinden met Kantine mislukt: Verkeerd wachtwoord?", w.info()
+        assert os.listdir(d) == ["wifi.txt.done"]
+        # unusable file: masked anyway, clear error, hotspot as usual
+        w, d = run("password=geheim123\n")
+        assert calls == [] and w.file_error == "wifi.txt: geen netwerknaam (ssid=) ingevuld"
+        assert os.listdir(d) == ["wifi.txt.done"]
+    finally:
+        nm = real_nm
+        fake["up_rc"] = 0
 
 
 def _selfcheck_online():

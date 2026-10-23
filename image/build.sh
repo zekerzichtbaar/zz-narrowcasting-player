@@ -141,8 +141,10 @@ fi
 [[ -L "$MNT/var/lib/dbus/machine-id" ]] || rm -f "$MNT/var/lib/dbus/machine-id"
 rm -f "$MNT"/etc/ssh/ssh_host_*
 
-log "ssh (boot partition)"
+log "ssh + wifi.txt template (boot partition)"
 : > "$MNT/boot/firmware/ssh"
+# Filled in on a laptop after flashing; the agent reads it at start (pi_player/wifitxt.py).
+cp "$REPO/image/wifi.txt" "$MNT/boot/firmware/wifi.txt"
 
 unmount_all
 log "zerofree"
@@ -191,14 +193,18 @@ check "pi_player/VERSION = $VERSION" grep -qx "$VERSION" "$MNT/opt/pi-player/pi_
 check "pi-player.service enabled" test -L "$MNT/etc/systemd/system/multi-user.target.wants/pi-player.service"
 check "bluetooth.service enabled" test -L "$MNT/etc/systemd/system/bluetooth.target.wants/bluetooth.service"
 for p in python3 python3-gi python3-pil python3-qrcode gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav chrony dnsmasq-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav chrony dnsmasq-base iw \
   bluez pi-bluetooth python3-dbus python3-cryptography; do
   check "package $p" pkg_installed "$p"
 done
+PORTAL_CONF="$MNT/etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf"
+check "portal dnsmasq: wildcard DNS" grep -qx 'address=/#/10.42.0.1' "$PORTAL_CONF"
+check "portal dnsmasq: option 114" grep -qx 'dhcp-option=114,"http://10.42.0.1/"' "$PORTAL_CONF"
 check "user $IMAGE_USER (uid 1000, sha512 password)" user_ok
 check "userconfig.service disabled" test ! -e "$MNT/etc/systemd/system/multi-user.target.wants/userconfig.service"
 check "no userconf.txt" test ! -e "$MNT/boot/firmware/userconf.txt"
 check "ssh on boot partition" test -e "$MNT/boot/firmware/ssh"
+check "empty wifi.txt template on boot partition" grep -qx 'ssid=' "$MNT/boot/firmware/wifi.txt"
 check "rfkill wlan state files 0" rfkill_wlan_zero
 check "NetworkManager WirelessEnabled=true" grep -qx 'WirelessEnabled=true' "$MNT/var/lib/NetworkManager/NetworkManager.state"
 check "regdomain $WIFI_COUNTRY on cmdline" cmdline_has "cfg80211.ieee80211_regdom=$WIFI_COUNTRY"

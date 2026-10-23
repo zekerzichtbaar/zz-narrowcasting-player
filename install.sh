@@ -141,7 +141,7 @@ echo "==> packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends chrony python3 \
-  python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base \
+  python3-pil python3-qrcode fonts-dejavu-core dnsmasq-base iw \
   bluez pi-bluetooth python3-dbus python3-cryptography \
   python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav
@@ -183,12 +183,17 @@ WRAP
 chmod 0755 /usr/local/bin/pi-player
 
 echo "==> wifi setup (hotspot + captive portal)"
-# Hotspot clients resolve every name to the Pi, so phones detect the captive portal.
-# 10.42.0.1 = netman.HOTSPOT_IP — keep in sync.
+# Hotspot clients resolve every name to the Pi, so phones detect the captive portal. Option 114
+# (RFC 8910) hands newer iOS/Android the portal address with the DHCP lease, before any probe.
+# Nothing listens on 443 and Pi OS has no firewall, so https probes get an instant RST (refused),
+# never a time-out: phones fall back to their http probe straight away. Keep it that way.
+# 10.42.0.1 = netman.HOTSPOT_IP, keep in sync.
 install -d -m 0755 /etc/NetworkManager/dnsmasq-shared.d
 cat > /etc/NetworkManager/dnsmasq-shared.d/pi-player-portal.conf <<'DNS'
-# pi-player: captive portal — answer every DNS query on the setup hotspot with the Pi itself.
+# pi-player: captive portal. Answer every DNS query on the setup hotspot with the Pi itself,
+# and announce the portal in DHCP (option 114, captive-portal URI).
 address=/#/10.42.0.1
+dhcp-option=114,"http://10.42.0.1/"
 DNS
 # Wifi stays rfkill-blocked on Pi OS until a regulatory country is set (Imager usually does it).
 if [[ -n "$CHROOT" ]]; then
