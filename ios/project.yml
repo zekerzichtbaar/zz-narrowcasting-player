@@ -83,6 +83,7 @@ targets:
       path: Clip/Info.plist
       properties:
         CFBundleDisplayName: Scherm instellen
+        CFBundlePackageType: APPL
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
