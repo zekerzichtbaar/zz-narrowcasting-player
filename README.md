@@ -335,7 +335,7 @@ restart the service. Then:
 - **Group wait + moment:** publish with `&wait=1` (screens download and report `pending_version`, a screen with nothing on it starts right away), then `curl -X POST 'http://localhost:8080/admin/activate?delay=45'`: same file, new version, every screen switches at the same moment without downloading again.
 - **Failed download:** add `&bad_sha=1`. The Pi rejects the file, keeps playing the old one, logs the mismatch and retries at the next poll.
 - **Unpublish:** `curl -X POST http://localhost:8080/admin/unpublish` (the screen goes to WAITING).
-- **Player update:** `curl -X POST 'http://localhost:8080/admin/update?version=v1.3.0'` puts `update` in every manifest until a heartbeat reports that `agent_version`. The Pi only installs it from the GitHub URL (`update_url_prefix`) and needs `systemd-run` (a dev machine marks it failed in `update.json`).
+- **Player update:** `curl -X POST 'http://localhost:8080/admin/update?version=v1.3.0'` puts `update` in every manifest until a heartbeat reports that `agent_version`. The Pi only installs it from the GitHub URL (`update_url_prefix`) and needs `systemd-run` (a dev machine marks it failed in `update.json`). While the runner works, a playing Pi shows "Aan het updaten..." bottom-left over the video on its own plane (`journalctl -u pi-player | grep "update label"`; preview: `python3 -m pi_player.screens OUT_DIR` writes `update-label-*.png`).
 - **Unpair:** `curl -X POST 'http://localhost:8080/admin/unpair[?device_id=pi-...]'` (the screen goes to PAIRING at its next poll or heartbeat).
 
 Without a Pi, you can run the agent on Linux with GStreamer (`video_sink = "autovideosink"`

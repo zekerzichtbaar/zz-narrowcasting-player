@@ -393,6 +393,39 @@ def identify(path, name, footer="", logo=None, rotation=0):
     return _save(img, path, rotation)
 
 
+UPDATE_TEXT = "Aan het updaten..."
+
+
+def update_label(path, rotation=0):
+    """The small "Aan het updaten..." label (house dark, green dot, Geist SemiBold ~3 % of the short
+    side) that gst.Display puts bottom-left on its own plane over the playing video during a player
+    update. Transparent around a rounded box, alpha PREMULTIPLIED (the vc4 plane default blend
+    mode), turned like the screens for a panel at 90/270 (the plane itself cannot turn 90)."""
+    from PIL import Image, ImageChops, ImageDraw
+    size = 32
+    font = _font(size, "semi")
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    left, top, right, bottom = probe.textbbox((0, 0), UPDATE_TEXT, font=font)
+    pad_x, pad_y, dot, gap = round(size * 0.75), round(size * 0.45), round(size * 0.35), round(size * 0.45)
+    w, h = pad_x + dot + gap + (right - left) + pad_x, (bottom - top) + 2 * pad_y
+
+    def box(d, k):
+        d.rounded_rectangle([0, 0, w * k - 1, h * k - 1], radius=h * k * 0.3, fill=BG + (224,))
+        cy = h * k / 2
+        d.ellipse([pad_x * k, cy - dot * k / 2, (pad_x + dot) * k, cy + dot * k / 2], fill=ACCENT + (255,))
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    _sprite(img, 0, 0, (w, h), box)
+    ImageDraw.Draw(img).text((pad_x + dot + gap - left, pad_y - top), UPDATE_TEXT, font=font, fill=FG + (255,))
+    r, g, b, a = img.split()
+    img = Image.merge("RGBA", [ImageChops.multiply(c, a) for c in (r, g, b)] + [a])
+    if portrait(rotation):
+        img = img.rotate(rotation, expand=True)  # counter-clockwise, like _turn
+    tmp = path + ".tmp"
+    img.save(tmp, "PNG")
+    os.replace(tmp, path)
+    return path
+
+
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
                portal_url="http://10.42.0.1", rotation=0, setup_url=None):
     """Wifi setup. With setup_url: a QR to the App Clip (Bluetooth) and the hotspot SSID + password as
@@ -490,6 +523,20 @@ def _selfcheck():
     for kind in FONTS:  # the bundled fonts load, not the DejaVu fallback
         assert _font(20, kind).getname()[0] != "DejaVu Sans", kind
     assert os.path.exists(ZZ_LOGO), ZZ_LOGO
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:  # update label: upright for the viewer, premultiplied
+        flat = Image.open(update_label(os.path.join(tmp, "u0.png"))).convert("RGBA")
+        assert flat.width > 4 * flat.height and flat.height < 80, flat.size
+        assert flat.getpixel((0, 0))[3] == 0  # rounded corner: transparent, so the video shows
+        px = flat.tobytes()
+        assert all(px[i + c] <= px[i + 3] for i in range(0, len(px), 4) for c in range(3))  # premultiplied
+        dot = (round(32 * 0.75) + 5, flat.height // 2)
+        assert flat.getpixel(dot)[1] > 150, flat.getpixel(dot)  # green dot on the left, text to its right
+        for rot, at in ((90, lambda i: (i.width // 2, i.height - 1 - dot[0])), (270, lambda i: (i.width - 1 - dot[1], dot[0]))):
+            turned = Image.open(update_label(os.path.join(tmp, f"u{rot}.png"), rot)).convert("RGBA")
+            assert turned.size == (flat.height, flat.width), (rot, turned.size)
+            # the label's start (green dot) is at the viewer's left: the panel's bottom (90) / top (270)
+            assert turned.getpixel(at(turned)) == flat.getpixel(dot), (rot, turned.getpixel(at(turned)))
     print("screens self-check OK")
 
 
@@ -507,6 +554,8 @@ if __name__ == "__main__":
     print(waiting(os.path.join(out, "waiting.png"), "Kantine links", f))
     print(waiting(os.path.join(out, "waiting-noname.png"), None, f))
     print(identify(os.path.join(out, "identify.png"), "Kantine links", f))
+    for r in (0, 90, 270):
+        print(update_label(os.path.join(out, f"update-label-{r}.png"), r))
     clip = "https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw"
     print(wifi_setup(os.path.join(out, "wifi-clip.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, setup_url=clip))
     print(wifi_setup(os.path.join(out, "wifi-clip-error.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,

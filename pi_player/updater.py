@@ -82,6 +82,14 @@ def wants(update, current, status, now):
     return update["version"]
 
 
+def updating(status, current, now):
+    """Is a runner installing another version right now (update.json)? Drives the "Aan het
+    updaten..." label: on once the runner is started, off when its start failed or it failed or
+    finished; the new agent (current == version) never shows it."""
+    return (status.get("status") == "running" and status.get("version") != current
+            and now - float(status.get("at") or 0) < RUN_TIMEOUT)
+
+
 def alive_ok(alive, version, since):
     """Did the agent of `version` heartbeat successfully at or after `since`?"""
     return bool(alive) and alive.get("version") == version and float(alive.get("at") or 0) >= since
@@ -250,6 +258,7 @@ class Updater:
         self.prefix = cfg.get("update_url_prefix") or URL_PREFIX
         self.paths = paths or Paths(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cfg["state_dir"])
         self.launch = launch
+        self.updating = False  # read by the agent's main loop: show the update label on the video
 
     def start(self):
         threading.Thread(target=self._loop, name="updater", daemon=True).start()
@@ -257,8 +266,14 @@ class Updater:
 
     def tick(self, now=None):
         """Returns the version it started, or None."""
+        try:
+            return self._tick(now or time.time())
+        finally:
+            self.updating = updating(read_json(self.paths.status), __version__, time.time())
+
+    def _tick(self, now):
         u = valid_update(self.content.update_request(), self.prefix)
-        v = wants(u, __version__, read_json(self.paths.status), now or time.time())
+        v = wants(u, __version__, read_json(self.paths.status), now)
         if not v:
             return None
         try:
@@ -318,6 +333,12 @@ def _selfcheck():
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "running", "at": now - 60}, now) is None
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "running", "at": now - RUN_TIMEOUT - 1}, now) == "v1.3.0"
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "done"}, now) == "v1.3.0"
+    running = {"version": "v1.3.0", "status": "running", "at": now - 60}
+    assert updating(running, "v1.2.0", now)  # the runner is busy: label on
+    assert not updating(running, "v1.3.0", now)  # the new agent: no label
+    assert not updating({**running, "status": "failed"}, "v1.2.0", now)
+    assert not updating({**running, "status": "done"}, "v1.2.0", now) and not updating({}, "v1.2.0", now)
+    assert not updating({**running, "at": now - RUN_TIMEOUT - 1}, "v1.2.0", now)  # a runner that died
     assert alive_ok({"version": "v1.3.0", "at": 5}, "v1.3.0", 5)
     assert not alive_ok({"version": "v1.3.0", "at": 4}, "v1.3.0", 5)  # the old process's mark
     assert not alive_ok({"version": "v1.2.0", "at": 9}, "v1.3.0", 5) and not alive_ok({}, "v1.3.0", 0)
@@ -420,13 +441,14 @@ def _selfcheck():
         fc = FakeContent()
         up = Updater({"state_dir": state_dir, "update_url_prefix": "http://127.0.0.1:"}, fc, paths,
                      lambda p, v, u: launched.append((v, u)))
-        assert up.tick() is None and launched == []
+        assert up.tick() is None and launched == [] and not up.updating
         fc.req = {"version": "v1.3.0", "url": url}
         assert up.tick() == "v1.3.0" and launched == [("v1.3.0", url)]
+        assert up.updating  # runner started: the label goes on
         assert open(os.path.join(paths.prev, "pi_player", "VERSION")).read().strip() == "v1.2.0"
         assert open(os.path.join(paths.prev, "pi-player.service")).read() == "old unit\n"
         assert read_json(paths.status)["status"] == "running"
-        assert up.tick() is None and len(launched) == 1  # running: not twice
+        assert up.tick() is None and len(launched) == 1 and up.updating  # running: not twice, label stays
         assert Updater({"state_dir": state_dir}, fc, paths, lambda *a: None).tick() is None  # wrong prefix
 
         # 1. success: the new agent heartbeats -> done; token, videos, state, config untouched
@@ -493,7 +515,9 @@ def _selfcheck():
 
         up2 = Updater({"state_dir": state_dir, "update_url_prefix": "http://127.0.0.1:"}, fc, paths, no_systemd)
         fc.req = {"version": "v1.3.0", "url": url}
+        up2.updating = True
         assert up2.tick() is None and read_json(paths.status)["status"] == "failed" and up2.tick() is None
+        assert not up2.updating  # the runner never started: label off, video plays on
         srv.shutdown()
     finally:
         shutil.rmtree(root, ignore_errors=True)

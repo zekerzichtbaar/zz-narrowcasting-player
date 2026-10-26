@@ -50,9 +50,10 @@ def runtime_dir():
             pass
 
 
-def play_synced(display, cfg, content=None, keep_playing=lambda: True):
+def play_synced(display, cfg, content=None, keep_playing=lambda: True, tick=lambda: None):
     """Play the video locked to the group clock until a new version is due ("switch") or
-    keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch."""
+    keep_playing() turns false ("leave"). GStreamer does the frame timing; we only watch. tick()
+    runs every check (the update label)."""
     video = cfg["video"]
     man = content.current_manifest() if content and video == content.current else None
     # Every screen counts loops from the same fixed epoch (config, 0 = 1970), never the manifest's:
@@ -74,6 +75,7 @@ def play_synced(display, cfg, content=None, keep_playing=lambda: True):
             raise DisplayError(display.error)
         if not keep_playing():
             return "leave"
+        tick()
         d = display.drift()
         heartbeat.STATUS["drift_ms"] = None if d is None else round(d * 1000, 1)
         if d is not None and abs(d) > th["seek_threshold"]:  # clock stepped, pipeline stalled, ...
@@ -106,9 +108,10 @@ def switch(content, cfg):
 class Agent:
     """Main loop: evaluate the state each tick, put the matching screen or the video on HDMI."""
 
-    def __init__(self, cfg, display, content, pair, monitor=None, wifi=None, ble=None):
+    def __init__(self, cfg, display, content, pair, monitor=None, wifi=None, ble=None, upd=None):
         self.cfg, self.display, self.content, self.pair = cfg, display, content, pair
-        self.monitor, self.wifi, self.ble = monitor, wifi, ble
+        self.monitor, self.wifi, self.ble, self.upd = monitor, wifi, ble, upd
+        self.labels = {}  # rotation -> rendered update label PNG
         self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.monotonic())  # monotonic: no RTC, NTP jumps the wall clock days
@@ -161,6 +164,20 @@ class Agent:
             log.info("showing %s screen %s (rotation %s)", st, path, rot)
         self.shown = (key, rot)
 
+    def label(self):
+        """"Aan het updaten..." bottom-left over the playing video while the update runner works
+        (until install.sh restarts us). Its own plane: the video stays zero-copy. Never fatal."""
+        png, rot = None, self.rotation()
+        if self.upd and self.upd.updating:
+            png = self.labels.get(rot)
+            if rot not in self.labels:
+                try:
+                    png = screens.update_label(os.path.join(self.screen_dir, f"update-label-{rot}.png"), rot)
+                except Exception as e:  # e.g. Pillow missing on a dev box
+                    log.warning("rendering the update label failed: %s", e)
+                self.labels[rot] = png
+        self.display.label(png, rot)
+
     def identifying(self):
         """"Scherm identificeren": (name, ms left) while the CMS asks this screen to show its name."""
         if not self.content:
@@ -198,7 +215,8 @@ class Agent:
                 # The video is never turned here: for a panel at 90/270 the CMS serves a turned
                 # file, so a new rotation arrives as a new version (download + switch).
                 if play_synced(self.display, self.cfg, self.content,
-                               lambda: self.state() == state.PLAYING and not self.identifying()) == "switch":
+                               lambda: self.state() == state.PLAYING and not self.identifying(),
+                               self.label) == "switch":
                     switch(self.content, self.cfg)
                 continue
             self.show(self.screen_key(st))
@@ -218,7 +236,7 @@ def run(cfg):
     signal.signal(signal.SIGINT, stop)
     try:
         log.info("pi-player %s, display via %s", __version__, cfg["video_sink"])
-        content = pair = monitor = wifi = ble = None
+        content = pair = monitor = wifi = ble = upd = None
         try:
             content = content_mod.Content(cfg)
             content.start()
@@ -229,7 +247,7 @@ def run(cfg):
             pair.start()
             heartbeat.Heartbeat(cfg, content).start()
             bell.Bell(cfg, content).start()  # poll/identify -> manifest now, not at the next poll
-            updater.Updater(cfg, content).start()  # "Speler bijwerken": runner in its own unit
+            upd = updater.Updater(cfg, content).start()  # "Speler bijwerken": runner in its own unit
             monitor = netman.Monitor(cfg["cms_url"]).start()
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()
@@ -238,7 +256,7 @@ def run(cfg):
                                             paired=lambda: bool(content.token())).start()
             else:
                 log.warning("nmcli not found: no wifi setup hotspot (dev machine?)")
-        Agent(cfg, display, content, pair, monitor, wifi, ble).loop()
+        Agent(cfg, display, content, pair, monitor, wifi, ble, upd).loop()
     except DisplayError as e:
         # Let systemd restart the whole agent (fresh pipeline, fresh state) — simplest recovery.
         log.error("display: %s; exiting for restart", e)

@@ -317,6 +317,14 @@ the CMS keeps asking for it (the beheer keeps showing "Wordt bijgewerkt"); a dif
 To retry the same version by hand: `sudo rm /var/lib/pi-player/update.json`. Logs:
 `journalctl -u pi-player-update`.
 
+On the tv: while `update.json` says `running` for another version than its own, the agent shows a
+small "Aan het updaten..." label bottom-left (for the viewer, also at rotation 90/270) over the
+playing video, never over the setup screens. It sits on its own DRM overlay plane (a second
+`kmssink` on the agent's shared vc4 fd, the first free ARGB overlay plane above the video's), so the
+video stays zero-copy. It goes when the runner cannot start, when the update fails or with the old
+agent (`install.sh` restarts it; the new agent shows none). A label that cannot be shown (no free
+plane, GStreamer < 1.22 without kmssink `fd`, no vc4) is a warning in the log; video and update go on.
+
 No reboot: `install.sh` never reboots; when a release changes the kernel cmdline (console, HDMI
 mode) that takes effect at the next reboot. The first updater gets onto a Pi by hand (`install.sh`
 over SSH or a new image); a player without it ignores `update` and keeps playing.

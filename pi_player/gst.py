@@ -3,15 +3,20 @@
 One pipeline at a time owns the screen. The screen pipeline stays up from one PNG to the next
 (appsrc), so changing screens never leaves HDMI empty; only screen <-> video swaps pipelines, and
 quiet_console() makes that moment black instead of the tty1 console.
+The one exception: during a player update a small label pipeline ("Aan het updaten...") sits on
+its own overlay plane above the video (Display.label), sharing the agent's DRM fd.
 
 The video pipeline runs on the system realtime clock (chrony keeps it equal on every Pi) with a
 base time chosen so that media position p plays at epoch + p (see sync.py). It loops with
 non-flushing segment seeks: no gap, no stall and no re-sync at the loop boundary.
 """
+import ctypes
+import ctypes.util
 import fcntl
 import logging
 import os
 import re
+import struct
 import threading
 import time
 
@@ -58,6 +63,96 @@ def quiet_console(tty="/dev/tty1", fb="fb0"):
         log.warning("console: cannot blank tty1 (%s)", e)
 
 
+# ---------- update label on its own DRM plane ----------
+# "Aan het updaten..." (screens.update_label) sits on a second overlay plane above the video: the
+# HVS blends it, so the video stays zero-copy. Only the DRM master may set planes, so the agent opens
+# the vc4 card once (and stays master) and hands that fd to every kmssink (`fd`, GStreamer >= 1.22).
+# Findings: CMS repo docs/slides/update-overlay/SPIKE.md. Any failure = a warning, the video plays on.
+LABEL_MARGIN = 54  # px from the panel edges (screens._mark margin)
+ARGB8888 = 0x34325241  # DRM fourcc 'AR24' = GStreamer BGRA
+
+
+def vc4_card():
+    """/dev/dri/cardN of the display controller (vc4), not the 3D one (v3d); None if there is none."""
+    try:
+        names = sorted(os.listdir("/sys/class/drm"))
+    except OSError:
+        return None
+    for name in names:
+        if not name.startswith("card") or "-" in name:
+            continue
+        try:
+            drv = os.path.basename(os.readlink(f"/sys/class/drm/{name}/device/driver"))
+        except OSError:
+            continue
+        if "vc4" in drv:
+            return f"/dev/dri/{name}"
+    return None
+
+
+def overlay_planes(fd):
+    """[(plane_id, crtc_id, possible_crtcs, has_argb)] via libdrm (ctypes). Without the universal
+    planes client cap (kmssink only sets it when it modesets) these are the overlay planes."""
+    u32, pu32 = ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)
+
+    class PlaneRes(ctypes.Structure):
+        _fields_ = [("count_planes", u32), ("planes", pu32)]
+
+    class Plane(ctypes.Structure):
+        _fields_ = [("count_formats", u32), ("formats", pu32), ("plane_id", u32), ("crtc_id", u32),
+                    ("fb_id", u32), ("crtc_x", u32), ("crtc_y", u32), ("x", u32), ("y", u32),
+                    ("possible_crtcs", u32), ("gamma_size", u32)]
+
+    drm = ctypes.CDLL(ctypes.util.find_library("drm") or "libdrm.so.2")
+    drm.drmModeGetPlaneResources.restype = ctypes.POINTER(PlaneRes)
+    drm.drmModeGetPlaneResources.argtypes = [ctypes.c_int]
+    drm.drmModeGetPlane.restype = ctypes.POINTER(Plane)
+    drm.drmModeGetPlane.argtypes = [ctypes.c_int, u32]
+    res = drm.drmModeGetPlaneResources(fd)
+    if not res:
+        raise OSError(f"drmModeGetPlaneResources failed on fd {fd}")
+    out = []
+    try:
+        for i in range(res.contents.count_planes):
+            p = drm.drmModeGetPlane(fd, res.contents.planes[i])
+            if p:
+                c = p.contents
+                fmts = {c.formats[j] for j in range(c.count_formats)}
+                out.append((c.plane_id, c.crtc_id, c.possible_crtcs, ARGB8888 in fmts))
+                drm.drmModeFreePlane(p)
+    finally:
+        drm.drmModeFreePlaneResources(res)
+    return out
+
+
+def pick_plane(planes, video_plane):
+    """A free overlay plane after the video's (vc4: higher plane id = higher default zpos, so on
+    top), on the same CRTCs, that takes ARGB8888. None if there is none."""
+    video = next((p for p in planes if p[0] == video_plane), None)
+    for pid, crtc, possible, argb in planes:
+        if pid > video_plane and not crtc and argb and (video is None or possible & video[2]):
+            return pid
+    return None
+
+
+def label_rect(rotation, disp_w, disp_h, w, h, margin=LABEL_MARGIN):
+    """(x, y, w, h) on the panel for a label PNG of w x h (already turned for the panel) so it sits
+    bottom-left for the viewer. The panel hangs `rotation` clockwise, so the viewer's bottom-left is
+    the panel's bottom-left (0), bottom-right (90) or top-left (270)."""
+    if rotation == 90:
+        return disp_w - margin - w, disp_h - margin - h, w, h
+    if rotation == 270:
+        return margin, margin, w, h
+    return margin, disp_h - margin - h, w, h
+
+
+def png_size(data):
+    """(width, height) from a PNG's IHDR."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or len(data) < 24:
+        raise ValueError("not a PNG")
+    return struct.unpack(">II", data[16:24])
+
+
 def to_rotation(value):
     """0, 90 or 270 from whatever the CMS (or config) sent; anything else is 0."""
     try:
@@ -95,11 +190,32 @@ class Display:
         self._offset = None  # pts - running time of the frames reaching the sink
         self.base = 0  # clock time (ns) of the first frame after the last join
         self._seg = None  # last segment past the parser (_loop_events)
+        self._label = None  # (png, rotation) asked for while this video plays; set even if it failed
+        self._osd = None  # the label pipeline
+        self.fd = self._own_card() if sink.split()[0] == "kmssink" else -1
+
+    @staticmethod
+    def _own_card():
+        """Open the vc4 card once: the agent stays DRM master, every kmssink shares this fd, and so
+        can a second kmssink for the update label. -1 = kmssink opens its own (as before)."""
+        card = vc4_card()
+        kms = Gst.ElementFactory.make("kmssink")
+        if not card or not kms or not kms.find_property("fd"):
+            log.warning("display: no vc4 card or kmssink without fd (GStreamer < 1.22): no update label")
+            return -1
+        try:
+            fd = os.open(card, os.O_RDWR | os.O_CLOEXEC)
+        except OSError as e:
+            log.warning("display: cannot open %s (%s): no update label", card, e)
+            return -1
+        log.info("display: DRM fd %d on %s, shared by every kmssink", fd, card)
+        return fd
 
     def alive(self):
         return self.error is None
 
     def close(self):
+        self._label_off()
         p, self.pipe, dur = self.pipe, None, self.duration
         self.still = False
         self.epoch = self.duration = None
@@ -115,6 +231,8 @@ class Display:
     def _new(self, desc, location=None, src="filesrc name=src"):
         self.close()
         p = Gst.parse_launch(f"{src} ! {desc} ! {self.sink} name=vsink")
+        if self.fd >= 0:  # kmssink forgets an external fd on stop: every new sink gets it again
+            p.get_by_name("vsink").set_property("fd", self.fd)
         if location:
             p.get_by_name("src").set_property("location", location)
         p.use_clock(self.clock)
@@ -242,6 +360,61 @@ class Display:
         log.info("joined the group clock at %.3f s, first frame in %.3f s",
                  (self._offset % dur) / 1e9, (base - self.clock.get_time()) / 1e9)
 
+    def label(self, png, rotation=0):
+        """Show the PNG (already turned for the panel) bottom-left for the viewer while the video
+        plays, on its own plane; None = off. Main thread only (the pipelines live there). Called
+        every tick: does nothing while nothing changed. Never raises: a failure is logged once per
+        video and the video plays on."""
+        want = (png, rotation) if png and self.duration else None
+        if want == self._label:
+            m = self._osd and self._osd.get_bus().pop_filtered(Gst.MessageType.ERROR)
+            if m:
+                log.warning("update label: %s; video plays on without it", m.parse_error()[0].message)
+                self._label_off(keep=True)
+            return
+        self._label_off()
+        self._label = want
+        if want:
+            try:
+                self._label_on(png, rotation)
+            except Exception as e:  # noqa: BLE001 - the label must never stop the video
+                log.warning("update label: %s; video plays on without it", e)
+                self._label_off(keep=True)
+
+    def _label_on(self, png, rotation):
+        if self.fd < 0:
+            raise DisplayError("no shared DRM fd")
+        with open(png, "rb") as f:
+            data = f.read()
+        vsink = self.pipe.get_by_name("vsink")
+        vplane = vsink.get_property("plane-id")
+        plane = pick_plane(overlay_planes(self.fd), vplane)
+        if plane is None:
+            raise DisplayError(f"no free overlay plane above the video's ({vplane})")
+        x, y, w, h = label_rect(rotation, vsink.get_property("display-width"),
+                                vsink.get_property("display-height"), *png_size(data))
+        p = Gst.parse_launch(f"{STILL_SRC} ! pngdec ! videoconvert ! video/x-raw,format=BGRA ! {self.sink} "
+                             f'name=osd sync=false skip-vsync=true plane-id={plane} render-rectangle="<{x},{y},{w},{h}>"')
+        # skip-vsync: a vblank wait would drain the video sink's events on the shared fd and hang it
+        p.get_by_name("osd").set_property("fd", self.fd)
+        self._osd = p
+        if p.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            raise DisplayError("label pipeline cannot start")
+        r = p.get_by_name("src").emit("push-buffer", Gst.Buffer.new_wrapped(data))
+        if r != Gst.FlowReturn.OK:
+            raise DisplayError(f"label not accepted ({r.value_nick})")
+        log.info("update label on plane %d at %d,%d %dx%d (video on plane %d)", plane, x, y, w, h, vplane)
+
+    def _label_off(self, keep=False):
+        """Stop the label pipeline: its framebuffer goes, which takes the plane off. keep = remember
+        what was asked, so a failed label is not retried every tick."""
+        p, self._osd = self._osd, None
+        if not keep:
+            self._label = None
+        if p:
+            p.set_state(Gst.State.NULL)
+            log.info("update label off")
+
     def drift(self):
         """Playback position minus the group target (s); None if unknown or not started yet."""
         started = self.pipe and self.duration and self.clock.get_time() > self.base
@@ -260,7 +433,64 @@ class Display:
         return dict(re.findall(r"(rendered|dropped)=\(guint64\)(\d+)", s.to_string())) if s else {}
 
 
+def _check_label_failure():
+    """A Pi without a free overlay plane (or any label error): a warning, the video plays on, and
+    the label is not retried every tick. No GStreamer needed: the failure comes before the pipeline."""
+    import tempfile
+
+    class Sink:
+        def get_property(self, k):
+            return {"plane-id": 52, "display-width": 1920, "display-height": 1080}[k]
+
+    class Pipe:
+        def get_by_name(self, name):
+            return Sink()
+
+    asked, real = [], globals()["overlay_planes"]
+
+    def busy(fd):
+        asked.append(fd)
+        return [(52, 91, 1, True), (53, 91, 1, True)]  # the only other plane is taken
+
+    d = Display.__new__(Display)
+    d.pipe, d.duration, d.fd, d._label, d._osd = Pipe(), 6_000_000_000, 7, None, None
+    globals()["overlay_planes"] = busy
+    logging.disable(logging.WARNING)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            f.write(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR" + struct.pack(">II", 300, 50))
+            f.flush()
+            for _ in range(3):  # every tick of play_synced
+                d.label(f.name, 0)
+            assert asked == [7] and d._osd is None and d._label == (f.name, 0)
+            d.label(None)  # update over: forgotten
+            assert d._label is None
+            d.fd = -1  # no shared DRM fd (old GStreamer, no vc4): same, without touching the planes
+            d.label(f.name, 90)
+            assert asked == [7] and d._osd is None and d._label == (f.name, 90)
+            d.duration = None  # a setup screen instead of the video: never a label
+            d.label(f.name, 90)
+            assert d._label is None
+    finally:
+        globals()["overlay_planes"] = real
+        logging.disable(logging.NOTSET)
+    print("  update label: a failure is a warning, once, and the video plays on")
+
+
 def _selfcheck():
+    # update label: bottom-left for the viewer, fully on the panel; label PNG is already turned
+    assert label_rect(0, 1920, 1080, 300, 50) == (54, 1080 - 54 - 50, 300, 50)
+    assert label_rect(90, 1920, 1080, 50, 300) == (1920 - 54 - 50, 1080 - 54 - 300, 50, 300)
+    assert label_rect(270, 1920, 1080, 50, 300) == (54, 54, 50, 300)
+    for r, size in ((0, (300, 50)), (90, (50, 300)), (270, (50, 300))):
+        x, y, w, h = label_rect(r, 1920, 1080, *size)
+        assert 0 <= x and 0 <= y and x + w <= 1920 and y + h <= 1080, r
+    planes = [(40, 0, 0x3, True), (52, 91, 0x3, True), (60, 0, 0x3, False), (70, 0, 0x4, True), (80, 0, 0x3, True)]
+    assert pick_plane(planes, 52) == 80  # not taken, ARGB, same CRTCs, above the video
+    assert pick_plane(planes, 80) is None
+    assert pick_plane([(52, 91, 1, True), (53, 91, 1, True)], 52) is None  # taken
+    assert png_size(b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 3, 2)) == (3, 2)
+    _check_label_failure()
     assert [to_rotation(v) for v in (0, 90, 270, "90", 180, -90, None, "x", 90.0)] == [0, 90, 270, 90, 0, 0, 0, 0, 90]
     try:
         G = _gst()
@@ -272,7 +502,6 @@ def _selfcheck():
     assert p.get_by_name("vsink") is not None
     p.set_state(G.State.NULL)
     # screens: every PNG goes through the same pipeline and reaches the sink
-    import struct
     import tempfile
     import zlib
 
