@@ -15,7 +15,7 @@ import urllib.request
 
 from . import __version__, read_version
 from .pairing import device_id
-from .updater import mark_alive
+from .updater import mark_alive, read_json, update_report
 
 log = logging.getLogger("pi-player")
 
@@ -32,8 +32,10 @@ class Unauthorized(Exception):
 
 # ---------- pure helpers ----------
 
-def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms, uptime, ip, network):
-    return {
+def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms, uptime, ip, network,
+                      update=None):
+    """`update` = updater.update_report() of update.json; the key is left out without one."""
+    payload = {
         "device_id": device_id,
         "agent_version": __version__,
         "time": round(now, 3),
@@ -45,10 +47,13 @@ def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms,
         "ip": ip,
         "network": network,
     }
+    if update is not None:
+        payload["update"] = update
+    return payload
 
 
 def due(key, last_key, since_last, every=HEARTBEAT_EVERY):
-    """Send now? On any change of (state, version, pending_version), else every `every` seconds."""
+    """Send now? On any change of (state, version, pending_version, update), else every `every` seconds."""
     return key != last_key or since_last >= every
 
 
@@ -115,8 +120,11 @@ class Heartbeat:
         threading.Thread(target=self._loop, name="heartbeat", daemon=True).start()
 
     def _status(self):
+        """(state, version, pending_version, update): a change sends right away (e.g. update failed)."""
         cur = self.content.current_manifest()
-        return (STATUS["state"], cur and cur["version"], self.content.pending_version())
+        update = update_report(read_json(os.path.join(self.content.dir, "update.json")))
+        return (STATUS["state"], cur and cur["version"], self.content.pending_version(),
+                update and tuple(update.values()))
 
     def _loop(self):
         last_key, last_sent, marked = None, float("-inf"), False
@@ -124,10 +132,11 @@ class Heartbeat:
             token = self.content.token()
             key = self._status()
             if token and due(key, last_key, time.monotonic() - last_sent):
-                state, version, pending = key
+                state, version, pending, update = key
                 payload = heartbeat_payload(self.device_id, time.time(), state, version, pending,
                                             STATUS["drift_ms"], time.time() - self.started,
-                                            local_ip(self.cfg["cms_url"]), network_kind())
+                                            local_ip(self.cfg["cms_url"]), network_kind(),
+                                            update and dict(zip(("version", "status", "reason", "attempt"), update)))
                 # Counts as sent also on failure: retry at the next 30 s, not every tick.
                 last_key, last_sent = key, time.monotonic()
                 try:
@@ -201,10 +210,38 @@ def _selfcheck():
                   "version": "v1", "pending_version": None, "drift_ms": 3.1, "uptime": 12,
                   "ip": "10.0.0.2", "network": "wifi"}
     assert heartbeat_payload("pi-1", 0, "WAITING", None, "v2", 5.0, 0, None, None)["drift_ms"] is None
+    # update: from update.json (updater.update_report), left out without one
+    assert "update" not in hb
+    rep = {"version": "v1.3.0", "status": "failed", "reason": "download: HTTP Error 404", "attempt": "1700000000"}
+    hbu = heartbeat_payload("pi-1", 0, "PLAYING", "v1", None, None, 0, None, None, rep)
+    assert hbu["update"] == rep and {k: v for k, v in hbu.items() if k != "update"} == \
+        heartbeat_payload("pi-1", 0, "PLAYING", "v1", None, None, 0, None, None)
+
+    # Heartbeat._status reads update.json from the state dir; its change makes the heartbeat due
+    class FakeContent:
+        dir = tempfile.mkdtemp()
+
+        def current_manifest(self):
+            return {"version": "v1"}
+
+        def pending_version(self):
+            return None
+
+    fake = Heartbeat.__new__(Heartbeat)
+    fake.content = FakeContent()
+    k0 = fake._status()
+    assert k0[3] is None  # no update.json
+    with open(os.path.join(fake.content.dir, "update.json"), "w") as f:
+        json.dump({**rep, "from": "v1.2.0", "at": 1}, f)
+    k1 = fake._status()
+    assert dict(zip(("version", "status", "reason", "attempt"), k1[3])) == rep and due(k1, k0, 0)
+    with open(os.path.join(fake.content.dir, "update.json"), "w") as f:
+        f.write("not json")
+    assert fake._status()[3] is None
     _check_version()
-    k = ("PLAYING", "v1", None)
+    k = ("PLAYING", "v1", None, None)
     assert due(k, None, 0) and not due(k, k, 29.9) and due(k, k, 30.0)
-    assert due(("PLAYING", "v1", "v2"), k, 0)
+    assert due(("PLAYING", "v1", "v2", None), k, 0)
 
     d = tempfile.mkdtemp()
     for name, state, wireless in (("lo", "unknown", False), ("eth0", "down", False), ("wlan0", "up", True)):

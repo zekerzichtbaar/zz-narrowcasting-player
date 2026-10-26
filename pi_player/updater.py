@@ -15,9 +15,12 @@ install.sh keeps /etc/pi-player/config.toml and /var/lib/pi-player (token, video
 module only writes update.json and alive.json there. Never reboots: install.sh only prints a hint
 when the kernel cmdline changed, which then applies at the next reboot.
 
-state_dir/update.json = {"version", "status": "running"|"done"|"failed", "from", "at", "reason"}.
-A failed version is not tried again while the CMS keeps asking for it (the beheer then keeps showing
-"Wordt bijgewerkt"); a different version is. To retry the same one: delete update.json.
+state_dir/update.json = {"version", "status": "running"|"done"|"failed", "from", "at", "reason",
+"attempt"}. `attempt` = the manifest's `update.attempt` (one per "Speler bijwerken" click, a string
+here; None from an older CMS). A failed version is not tried again for the same attempt while the
+CMS keeps asking for it; a new attempt (the beheer's "Opnieuw proberen") or a different version is.
+The heartbeat reports update.json to the CMS (`update_report()`, protocol section 4). Without an
+attempt from the CMS a failure blocks that version for good: to retry by hand, delete update.json.
 
 Self-check: python3 -m pi_player.updater
 """
@@ -61,14 +64,27 @@ class Paths:
 
 # ---------- pure helpers ----------
 
+def valid_attempt(a):
+    """`update.attempt` as a string (a positive int or a short token), else None (missing/invalid)."""
+    if isinstance(a, int) and not isinstance(a, bool) and a > 0:
+        return str(a)
+    if isinstance(a, str) and VERSION_RE.match(a):
+        return a
+    return None
+
+
 def valid_update(u, prefix=URL_PREFIX):
-    """The manifest's `update` as {"version", "url"} if usable, else None."""
+    """The manifest's `update` as {"version", "url"} (+ "attempt" when valid) if usable, else None."""
     if not isinstance(u, dict):
         return None
     v, url = u.get("version"), u.get("url")
     if not isinstance(v, str) or not VERSION_RE.match(v) or not isinstance(url, str) or not url.startswith(prefix):
         return None
-    return {"version": v, "url": url}
+    out = {"version": v, "url": url}
+    attempt = valid_attempt(u.get("attempt"))
+    if attempt is not None:
+        out["attempt"] = attempt
+    return out
 
 
 def wants(update, current, status, now):
@@ -77,8 +93,9 @@ def wants(update, current, status, now):
         return None
     if status.get("status") == "running" and now - float(status.get("at") or 0) < RUN_TIMEOUT:
         return None  # one at a time
-    if status.get("status") == "failed" and status.get("version") == update["version"]:
-        return None  # rolled back once: not again for the same version
+    if (status.get("status") == "failed" and status.get("version") == update["version"]
+            and status.get("attempt") == update.get("attempt")):
+        return None  # failed for this request: not again until the CMS sends a new attempt
     return update["version"]
 
 
@@ -88,6 +105,16 @@ def updating(status, current, now):
     finished; the new agent (current == version) never shows it."""
     return (status.get("status") == "running" and status.get("version") != current
             and now - float(status.get("at") or 0) < RUN_TIMEOUT)
+
+
+def update_report(status):
+    """update.json as the heartbeat's `update` field, or None (no file / not usable)."""
+    v, st = status.get("version"), status.get("status")
+    if not isinstance(v, str) or not VERSION_RE.match(v) or st not in ("running", "done", "failed"):
+        return None
+    reason = status.get("reason")
+    return {"version": v, "status": st, "reason": str(reason)[:500] if reason and st == "failed" else None,
+            "attempt": valid_attempt(status.get("attempt"))}
 
 
 def alive_ok(alive, version, since):
@@ -121,8 +148,9 @@ def mark_alive(state_dir, version=None):
         log.warning("writing alive.json failed: %s", e)
 
 
-def set_status(paths, version, status, reason=None, frm=None):
-    st = {"version": version, "status": status, "from": frm or __version__, "at": time.time(), "reason": reason}
+def set_status(paths, version, status, reason=None, frm=None, attempt=None):
+    st = {"version": version, "status": status, "from": frm or __version__, "at": time.time(), "reason": reason,
+          "attempt": attempt}
     write_json(paths.status, st)
     log.info("update %s: %s%s", version, status, f" ({reason})" if reason else "")
 
@@ -204,10 +232,14 @@ def rollback(paths, restart):
 
 
 def apply(paths, version, url, frm=None, install=run_install, restart=restart_service,
-          verify=VERIFY_SECONDS, poll=5.0):
+          verify=VERIFY_SECONDS, poll=5.0, attempt=None):
     """Install `version` from `url`; roll back unless it heartbeats in time. Returns True on success."""
     frm = frm or __version__
-    set_status(paths, version, "running", frm=frm)
+
+    def status(st, reason=None):
+        set_status(paths, version, st, reason, frm, attempt)
+
+    status("running")
     work = tempfile.mkdtemp(prefix="pi-player-update-")
     try:
         try:
@@ -215,7 +247,7 @@ def apply(paths, version, url, frm=None, install=run_install, restart=restart_se
             fetch(url, tarball)
             src = unpack(tarball, os.path.join(work, "src"))
         except Exception as e:  # nothing changed yet: just remember it failed
-            set_status(paths, version, "failed", f"download: {e}", frm)
+            status("failed", f"download: {e}")
             return False
         since = time.time()
         try:
@@ -223,17 +255,17 @@ def apply(paths, version, url, frm=None, install=run_install, restart=restart_se
         except Exception as e:
             log.error("update %s: install failed (%s); rolling back to %s", version, e, frm)
             rollback(paths, restart)
-            set_status(paths, version, "failed", f"install: {e}", frm)
+            status("failed", f"install: {e}")
             return False
         deadline = time.time() + verify
         while time.time() < deadline:
             if alive_ok(read_json(paths.alive), version, since):
-                set_status(paths, version, "done", frm=frm)
+                status("done")
                 return True
             time.sleep(poll)
         log.error("update %s: no heartbeat within %s s; rolling back to %s", version, verify, frm)
         rollback(paths, restart)
-        set_status(paths, version, "failed", f"no heartbeat within {verify} s", frm)
+        status("failed", f"no heartbeat within {verify} s")
         return False
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -241,12 +273,13 @@ def apply(paths, version, url, frm=None, install=run_install, restart=restart_se
 
 # ---------- agent side ----------
 
-def launch_runner(paths, version, url):
+def launch_runner(paths, version, url, attempt=None):
     """Start the runner from the backup as a transient unit; it survives pi-player.service restarts."""
+    extra = ["--attempt", attempt] if attempt else []
     subprocess.run(["systemd-run", f"--unit={RUNNER_UNIT}", "--collect", "--quiet",
                     f"--setenv=PYTHONPATH={paths.prev}", "--setenv=PYTHONUNBUFFERED=1",
                     "/usr/bin/python3", "-m", "pi_player.updater", "apply", version, url,
-                    "--app", paths.app, "--state", paths.state, "--from", __version__],
+                    "--app", paths.app, "--state", paths.state, "--from", __version__, *extra],
                    check=True, timeout=30)
 
 
@@ -276,12 +309,13 @@ class Updater:
         v = wants(u, __version__, read_json(self.paths.status), now)
         if not v:
             return None
+        attempt = u.get("attempt")
         try:
             backup(self.paths)
-            set_status(self.paths, v, "running")
-            self.launch(self.paths, v, u["url"])
-        except Exception as e:  # e.g. no systemd-run on a dev box: do not retry every tick
-            set_status(self.paths, v, "failed", f"start: {e}")
+            set_status(self.paths, v, "running", attempt=attempt)
+            self.launch(self.paths, v, u["url"], attempt)
+        except Exception as e:  # e.g. no systemd-run on a dev box: do not retry every tick (same attempt)
+            set_status(self.paths, v, "failed", f"start: {e}", attempt=attempt)
             return None
         log.info("update to %s started (runner unit %s)", v, RUNNER_UNIT)
         return v
@@ -303,11 +337,12 @@ def main(argv=None):
     p.add_argument("--app", default=APP)
     p.add_argument("--state", default="/var/lib/pi-player")
     p.add_argument("--from", dest="frm", default=None)
+    p.add_argument("--attempt", default=None)
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not VERSION_RE.match(a.version):
         sys.exit("bad version")
-    sys.exit(0 if apply(Paths(a.app, a.state), a.version, a.url, a.frm) else 1)
+    sys.exit(0 if apply(Paths(a.app, a.state), a.version, a.url, a.frm, attempt=valid_attempt(a.attempt)) else 1)
 
 
 # ---------- self-check ----------
@@ -333,6 +368,29 @@ def _selfcheck():
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "running", "at": now - 60}, now) is None
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "running", "at": now - RUN_TIMEOUT - 1}, now) == "v1.3.0"
     assert wants(good, "v1.2.0", {"version": "v1.3.0", "status": "done"}, now) == "v1.3.0"
+    # attempt: a failure blocks only the same version for the same attempt ("Opnieuw proberen" = new one)
+    assert valid_update({**good, "attempt": 1700000000}) == {**good, "attempt": "1700000000"}
+    assert valid_update({**good, "attempt": "a-1"})["attempt"] == "a-1"
+    for bad_attempt in (None, 0, -5, True, 1.5, "", "x y", {"a": 1}):
+        assert valid_update({**good, "attempt": bad_attempt}) == good, bad_attempt
+    assert valid_attempt("x" * 65) is None
+    with_a, with_b = {**good, "attempt": "A"}, {**good, "attempt": "B"}
+    failed_a = {"version": "v1.3.0", "status": "failed", "attempt": "A"}
+    assert wants(with_a, "v1.2.0", failed_a, now) is None  # same attempt: not again
+    assert wants(with_b, "v1.2.0", failed_a, now) == "v1.3.0"  # new attempt: try again
+    assert wants(good, "v1.2.0", failed_a, now) == "v1.3.0"  # CMS without attempts after one with
+    assert wants(with_a, "v1.2.0", {"version": "v1.3.0", "status": "failed"}, now) == "v1.3.0"  # old update.json
+    assert wants(with_b, "v1.2.0", {**failed_a, "status": "running", "at": now - 60}, now) is None  # one at a time
+    assert wants(with_b, "v1.3.0", failed_a, now) is None  # already there
+    # update_report: update.json as the heartbeat field
+    assert update_report({}) is None and update_report({"version": "v1.3.0"}) is None
+    assert update_report({"version": "v1.3.0", "status": "weird"}) is None
+    assert update_report({"version": "rm -rf", "status": "failed"}) is None
+    assert update_report({**failed_a, "reason": "install: install.sh exited 3", "from": "v1.2.0", "at": 1}) == {
+        "version": "v1.3.0", "status": "failed", "reason": "install: install.sh exited 3", "attempt": "A"}
+    assert update_report({"version": "v1.3.0", "status": "running", "reason": "x", "attempt": None}) == {
+        "version": "v1.3.0", "status": "running", "reason": None, "attempt": None}
+    assert len(update_report({"version": "v1.3.0", "status": "failed", "reason": "x" * 900})["reason"]) == 500
     running = {"version": "v1.3.0", "status": "running", "at": now - 60}
     assert updating(running, "v1.2.0", now)  # the runner is busy: label on
     assert not updating(running, "v1.3.0", now)  # the new agent: no label
@@ -440,7 +498,7 @@ def _selfcheck():
         launched = []
         fc = FakeContent()
         up = Updater({"state_dir": state_dir, "update_url_prefix": "http://127.0.0.1:"}, fc, paths,
-                     lambda p, v, u: launched.append((v, u)))
+                     lambda p, v, u, a=None: launched.append((v, u)))
         assert up.tick() is None and launched == [] and not up.updating
         fc.req = {"version": "v1.3.0", "url": url}
         assert up.tick() == "v1.3.0" and launched == [("v1.3.0", url)]
@@ -492,6 +550,23 @@ def _selfcheck():
         fc.req = {"version": "v1.3.1", "url": url}
         launched.clear()
         assert up.tick() == "v1.3.1" and launched == [("v1.3.1", url)]
+
+        # 2b. with attempts: the runner gets the attempt and writes it; same attempt = not again,
+        # a new attempt ("Opnieuw proberen") = start again for the same version
+        reset_old()
+        assert not apply(paths, "v1.3.0", url, "v1.2.0", install(), lambda: restarts.append("rollback"),
+                         verify=0.2, poll=0.05, attempt="A")
+        assert read_json(paths.status)["attempt"] == "A"
+        assert update_report(read_json(paths.status))["status"] == "failed"
+        got = []
+        up_a = Updater({"state_dir": state_dir, "update_url_prefix": "http://127.0.0.1:"}, fc, paths,
+                       lambda p, v, u, a=None: got.append((v, a)))
+        fc.req = {"version": "v1.3.0", "url": url, "attempt": "A"}
+        assert up_a.tick() is None and got == []
+        fc.req = {"version": "v1.3.0", "url": url, "attempt": "B"}
+        assert up_a.tick() == "v1.3.0" and got == [("v1.3.0", "B")]
+        st = read_json(paths.status)
+        assert st["status"] == "running" and st["attempt"] == "B"
 
         # 3. install.sh fails halfway (code dir gone): rolled back right away
         reset_old()

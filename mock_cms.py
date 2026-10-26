@@ -23,7 +23,8 @@ Admin (curl):
                                  manifest (version unchanged; nothing published = 200 version null)
   POST /admin/rotate?rotation=90   how the screen hangs (0|90|270 clockwise), in every manifest; rings `poll`
   POST /admin/update[?version=v1.3.0][&url=...]   "Speler bijwerken": `update` in every manifest until a
-                                 heartbeat reports that agent_version (no version = clear); rings `poll`
+                                 heartbeat reports that agent_version (no version = clear); each call = a new `attempt`
+                                 (retries a failed update of the same version); rings `poll`
   POST /admin/unpair[?device_id=pi-...]   revoke tokens (all, or that device's): next call gets 401
   POST /admin/pair[?token=T]     re-enable the hand-provisioned --token (or add token T)
   POST /admin/poll               ring `poll` on the bel
@@ -377,7 +378,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if url.path == "/admin/update":
             v = q.get("version")
             STATE["update"] = {"version": v, "url": q.get("url") or
-                               f"https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/{v}.tar.gz"} if v else None
+                               f"https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/{v}.tar.gz",
+                               "attempt": int(time.time())} if v else None
             log("update", json.dumps(STATE["update"]))
             ring("poll")
             return self._json(200, {"update": STATE["update"]})

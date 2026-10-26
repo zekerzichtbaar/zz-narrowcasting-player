@@ -149,7 +149,7 @@ Fields:
 | `identify_until` | int | "Scherm identificeren" in the CMS: show `screen.name` big, full screen, instead of the video or setup screen until this Unix time (the video re-joins the group clock afterwards). `0` = not identifying. **Not** part of `version`: it never makes the Pi download or switch, and the Pi acts on it also when `version` is unchanged. Arrives within one poll; the CMS keeps it for 60 s. |
 | `orientation` | string | `landscape` or `portrait`: the format of the playlist. Informational; the Pi plays whatever size the file has (fitted, black bars). A portrait playlist on a panel at `rotation` 90/270 comes as a 1920x1080 file with the picture already turned (see `rotation`). |
 | `rotation` | int | How the panel physically hangs: `0`, `90` or `270` degrees turned **clockwise** (CMS "Stand van het scherm"). The Pi only turns its own setup/waiting/wifi/identify screens with it (picture turned back the other way: 90 -> 90 degrees counter-clockwise) and keeps the value in `state.json` for restarts without network. The Pi **never turns the video** (too heavy on a Pi 4): for a portrait playlist on a panel at 90/270 the CMS serves a variant of the render with the picture already turned that way (`url`, `sha256`, `size` and `version` are the variant's), a plain 1920x1080 file that plays zero-copy like a landscape one. A rotation change therefore reaches the video as a new `version` (a different file); the field itself is **not** part of `version`. Also in the `version: null` body. Missing (older CMS) = keep the last one. |
-| `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz"}`, the release this player should install, or `null`. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
+| `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz", "attempt": 1760437213}`, the release this player should install, or `null`. `attempt` (optional) is unique per request in the CMS (a new one on every "Speler bijwerken" / "Opnieuw proberen", e.g. the request time in Unix seconds): a positive int or a short token (`[A-Za-z0-9][A-Za-z0-9._+-]{0,63}`); the Pi compares it as a string for equality only and ignores an invalid one (as if missing). A failed update is retried only when `attempt` changes (section 7). Missing `attempt` (older CMS) = a failed version is never tried again. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = now mod duration` (epoch 0; the manifest's `epoch` is ignored, a CMS once
@@ -183,8 +183,8 @@ when nothing plays). The group moment then arrives as a new `version` with the s
 
 ### 4.1 `POST <CMS>/api/devices/heartbeat`
 
-Authenticated. Sent every 30 s while the Pi has a token, and right away when `state`, `version`
-or `pending_version` changes (so a finished download is reported within a second).
+Authenticated. Sent every 30 s while the Pi has a token, and right away when `state`, `version`,
+`pending_version` or `update` changes (so a finished download or a failed update is reported within a second).
 
 Request:
 ```json
@@ -198,7 +198,8 @@ Request:
   "drift_ms": 3.1,
   "uptime": 86400,
   "ip": "192.168.1.42",
-  "network": "wifi"
+  "network": "wifi",
+  "update": {"version": "v1.3.0", "status": "failed", "reason": "install: install.sh exited 3", "attempt": "1760437213"}
 }
 ```
 
@@ -214,12 +215,14 @@ next heartbeat simply follows 30 s later.
 | `network` | `ethernet` \| `wifi` (`null` if neither is up) |
 | `agent_version` | player release: the git tag, `v` included (`v1.2.3`); `dev` or `dev-<git describe>` for a build that is not a tagged release |
 | `ip` | local IPv4 address the Pi routes to the CMS from (`null` if unknown) |
+| `update` | the last update this Pi tried, from `update.json` (section 7): `{"version", "status": "running"\|"done"\|"failed", "reason", "attempt"}`. `reason` (max 500 chars, English, e.g. `download: ...`, `install: install.sh exited 3`, `no heartbeat within 300 s`, `start: ...`) only with `failed`, else `null`; `attempt` = the manifest's `update.attempt` that started it, as a **string** (`null` when the CMS sent none). Left out when the Pi never tried an update. A failure belongs to the CMS's current request only when `version` and `attempt` both match it; an older one is history. |
 
 The CMS uses it as "online" (last seen) and as the stored version for group activation:
 `pending_version` if set, else `version`. It also stores `agent_version`, `ip` and `network` to show
 in the beheer (an invalid value is ignored, never an error), and clears an asked update (manifest
 `update`) once `agent_version` equals its `version`; `drift_ms` and `uptime` are diagnostics
-the CMS may ignore. Unknown fields are ignored.
+the CMS may ignore. Unknown fields are ignored. An older player sends no `update` field: the CMS then
+knows nothing about the outcome (no error) and only sees `agent_version`.
 
 `agent_version` comes from `pi_player/VERSION`, written by `install.sh`: `PI_PLAYER_VERSION` (the
 image build passes its `VERSION`, the release tag on a tag push), else a `VERSION` file already in
@@ -311,11 +314,15 @@ never two fetches at once.
    A failed download changes nothing and restarts nothing.
 
 `/var/lib/pi-player/update.json` = `{"version", "status": "running"|"done"|"failed", "from", "at",
-"reason"}`. One update at a time (a `running` status younger than 45 minutes blocks the next; older
-= the runner died, e.g. a reboot during the update). A `failed` version is not tried again while
-the CMS keeps asking for it (the beheer keeps showing "Wordt bijgewerkt"); a different version is.
-To retry the same version by hand: `sudo rm /var/lib/pi-player/update.json`. Logs:
-`journalctl -u pi-player-update`.
+"reason", "attempt"}` (`attempt` = the manifest's `update.attempt` as a string, passed to the runner as
+`--attempt`; `null` without one). One update at a time (a `running` status younger than 45 minutes
+blocks the next; older = the runner died, e.g. a reboot during the update). A `failed` version is not
+tried again for the same `attempt` while the CMS keeps asking for it; a new `attempt` ("Opnieuw
+proberen" in the beheer) or a different version is. Without `attempt` (an older CMS) a failed
+version stays blocked, as before. The heartbeat reports `update.json` as its `update` field
+(section 4.1), so the CMS can show "Update mislukt" with the reason. An older player ignores
+`attempt` and never retries the same version. To retry by hand: `sudo rm /var/lib/pi-player/update.json`.
+Logs: `journalctl -u pi-player-update`.
 
 On the tv: while `update.json` says `running` for another version than its own, the agent shows a
 small "Aan het updaten..." label bottom-left (for the viewer, also at rotation 90/270) over the

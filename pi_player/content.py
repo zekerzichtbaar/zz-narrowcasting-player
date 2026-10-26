@@ -570,7 +570,8 @@ def _selfcheck():
         post("/admin/update?version=v9.0.0")
         c.check()
         assert valid_update(c.update_request()) == {
-            "version": "v9.0.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v9.0.0.tar.gz"}
+            "version": "v9.0.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v9.0.0.tar.gz",
+            "attempt": str(mock_cms.STATE["update"]["attempt"])}
         assert not c.has_current() and c.pending_version() is None
         hb = urllib.request.Request(cms_url + "/api/devices/heartbeat", method="POST", data=b'{"agent_version": "v9.0.0"}',
                                     headers={"Authorization": "Bearer devtoken", "Content-Type": "application/json"})
