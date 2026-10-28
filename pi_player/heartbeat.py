@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from . import __version__, read_version
+from .deviceinfo import DeviceInfo
 from .pairing import device_id
 from .updater import mark_alive, read_json, update_report
 
@@ -33,9 +34,9 @@ class Unauthorized(Exception):
 # ---------- pure helpers ----------
 
 def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms, uptime, ip, network,
-                      update=None, storage=None):
-    """`update` = updater.update_report() of update.json; `storage` = storage_report(). Each key is
-    left out without one."""
+                      update=None, storage=None, device=None):
+    """`update` = updater.update_report() of update.json; `storage` = storage_report(); `device` =
+    DeviceInfo.report() (hardware, network, health for "Details"). Each key is left out without one."""
     payload = {
         "device_id": device_id,
         "agent_version": __version__,
@@ -52,6 +53,8 @@ def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms,
         payload["update"] = update
     if storage is not None:
         payload["storage"] = storage
+    if device is not None:
+        payload["device"] = device
     return payload
 
 
@@ -132,6 +135,7 @@ class Heartbeat:
         self.content = content
         self.started = time.time()
         self.device_id = device_id()
+        self.info = DeviceInfo()
 
     def start(self):
         threading.Thread(target=self._loop, name="heartbeat", daemon=True).start()
@@ -154,7 +158,7 @@ class Heartbeat:
                                             STATUS["drift_ms"], time.time() - self.started,
                                             local_ip(self.cfg["cms_url"]), network_kind(),
                                             update and dict(zip(("version", "status", "reason", "attempt"), update)),
-                                            storage_report(self.content.dir))
+                                            storage_report(self.content.dir), self.info.report())
                 # Counts as sent also on failure: retry at the next 30 s, not every tick.
                 last_key, last_sent = key, time.monotonic()
                 try:

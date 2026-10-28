@@ -202,6 +202,7 @@ Request:
   "ip": "192.168.1.42",
   "network": "wifi",
   "storage": {"free_bytes": 24800000000, "used_bytes": 21300000},
+  "device": {"serial": "10000000a1b2c3d4", "model": "Raspberry Pi 4 Model B Rev 1.5", "ssid": "Kantine", "signal": 72, "temp_c": 52.6, "...": "..."},
   "update": {"version": "v1.3.0", "status": "failed", "reason": "install: install.sh exited 3", "attempt": "1760437213"}
 }
 ```
@@ -219,6 +220,7 @@ next heartbeat simply follows 30 s later.
 | `agent_version` | player release: the git tag, `v` included (`v1.2.3`); `dev` or `dev-<git describe>` for a build that is not a tagged release |
 | `ip` | local IPv4 address the Pi routes to the CMS from (`null` if unknown) |
 | `storage` | `{"free_bytes", "used_bytes"}`: free space on the disk of the state dir and the size of the files the player keeps there (current + next mp4), for "Opslag" and "past" in the CMS (playlist <= free + used). Left out when the disk can't be read. The CMS keeps the last value when it is missing, clears it on an explicit `null` and ignores an invalid one. |
+| `device` | hardware, network and health for "Details" on `/schermen` (`pi_player/deviceinfo.py`), every key optional and `null` when unreadable: `serial`, `model`, `os`, `kernel`, `hostname`, `iface` (of the default route), `mac`, `ssid`, `signal` (wifi %), `throttled` (`vcgencmd get_throttled`, `"0x0"` = fine), `temp_c`, `uptime_s`, `mem_total`, `mem_available` (bytes), `load` (1 min), `hdmi` (`{"connected", "mode"}`, mode = the screen's preferred one). Fixed facts read once, nmcli/vcgencmd at most once a minute. The CMS stores the latest as a whole and ignores unknown keys and wrong types. |
 | `update` | the last update this Pi tried, from `update.json` (section 7): `{"version", "status": "running"\|"done"\|"failed", "reason", "attempt"}`. `reason` (max 500 chars, English, e.g. `download: ...`, `install: install.sh exited 3`, `no heartbeat within 300 s`, `start: ...`) only with `failed`, else `null`; `attempt` = the manifest's `update.attempt` that started it, as a **string** (`null` when the CMS sent none). Left out when the Pi never tried an update. A failure belongs to the CMS's current request only when `version` and `attempt` both match it; an older one is history. |
 
 The CMS uses it as "online" (last seen) and as the stored version for group activation:
