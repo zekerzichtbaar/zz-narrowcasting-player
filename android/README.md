@@ -90,8 +90,8 @@ Release builds have the same mock behind the demo link
 
   ```sh
   fastlane android verify_auth    # credentials work and the app exists in Play Console
-  fastlane android listing        # Dutch texts, icon, feature graphic, screenshots from fastlane/metadata
   fastlane android release        # signed bundle, next versionCode, internal track as a draft
+  fastlane android listing        # Dutch texts, icon, feature graphic, screenshots (needs a release on Play)
   fastlane android release track:production status:completed version_name:1.1
   ```
 

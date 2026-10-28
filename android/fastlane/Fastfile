@@ -40,9 +40,14 @@ platform :android do
 
   desc "Upload the store listing: texts, icon, feature graphic and screenshots"
   lane :listing do
+    # supply looks up a release even when it only uploads the listing, so point it at the newest one.
+    latest = TRACKS.map { |t| [t, version_codes(t).map(&:to_i).max] }.reject { |_, code| code.nil? }.max_by { |_, code| code }
+    UI.user_error!("Play has no release yet: run `fastlane android release` first") if latest.nil?
     upload_to_play_store(
       package_name: PACKAGE_NAME,
       json_key: play_json_key,
+      track: latest[0],
+      version_code: latest[1],
       skip_upload_aab: true,
       skip_upload_apk: true,
       skip_upload_changelogs: true,
