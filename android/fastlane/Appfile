@@ -1,0 +1,2 @@
+package_name("nl.zekerzichtbaar.narrowcasting")
+json_key_file(ENV["PLAY_JSON_KEY_PATH"].to_s.empty? ? nil : File.expand_path(ENV["PLAY_JSON_KEY_PATH"]))

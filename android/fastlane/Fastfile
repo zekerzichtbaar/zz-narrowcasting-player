@@ -1,0 +1,78 @@
+opt_out_usage
+skip_docs
+
+# Usage, from android/:
+#   fastlane android verify_auth           credentials work and the app exists in Play Console
+#   fastlane android listing               upload texts, icon, feature graphic and screenshots
+#   fastlane android release               build a signed bundle and upload it to the internal track
+#     options: track:internal|alpha|beta|production  status:draft|completed  version_code:N  version_name:X.Y
+#
+# Credentials: PLAY_JSON_KEY_PATH in android/fastlane/.env (git-ignored), a service account with
+# the Release Manager role. Signing: android/keystore.properties (see android/README.md).
+#
+# Until the app has been published once, Play only accepts releases with status "draft":
+# the first release is then rolled out by hand in Play Console.
+
+PACKAGE_NAME = "nl.zekerzichtbaar.narrowcasting"
+TRACKS = %w[internal alpha beta production].freeze
+
+def play_json_key
+  raw = ENV["PLAY_JSON_KEY_PATH"].to_s.strip
+  UI.user_error!("PLAY_JSON_KEY_PATH is not set. Add it to android/fastlane/.env.") if raw.empty?
+  path = File.expand_path(raw)
+  UI.user_error!("PLAY_JSON_KEY_PATH does not exist: #{path}") unless File.exist?(path)
+  path
+end
+
+# supply raises NoMethodError on flat_map for a track that never had a release.
+def version_codes(track)
+  google_play_track_version_codes(package_name: PACKAGE_NAME, json_key: play_json_key, track: track) || []
+rescue NoMethodError => e
+  raise unless e.message.include?("flat_map")
+  []
+end
+
+platform :android do
+  desc "Check the Google Play credentials and that the app exists"
+  lane :verify_auth do
+    TRACKS.each { |track| UI.success("#{track}: #{version_codes(track).inspect}") }
+  end
+
+  desc "Upload the store listing: texts, icon, feature graphic and screenshots"
+  lane :listing do
+    upload_to_play_store(
+      package_name: PACKAGE_NAME,
+      json_key: play_json_key,
+      skip_upload_aab: true,
+      skip_upload_apk: true,
+      skip_upload_changelogs: true,
+    )
+  end
+
+  desc "Build a signed bundle and upload it to a Play track"
+  lane :release do |options|
+    keystore = File.expand_path("../keystore.properties", __dir__)
+    UI.user_error!("android/keystore.properties is missing: the bundle would be signed with the debug key") unless File.exist?(keystore)
+
+    track = options[:track].to_s.empty? ? "internal" : options[:track].to_s
+    status = options[:status].to_s.empty? ? "draft" : options[:status].to_s
+    code = options[:version_code].to_s.empty? ? TRACKS.flat_map { |t| version_codes(t) }.map(&:to_i).max.to_i + 1 : options[:version_code].to_i
+    properties = { "versionCode" => code }
+    properties["versionName"] = options[:version_name].to_s unless options[:version_name].to_s.empty?
+    UI.message("versionCode #{code}, track #{track}, status #{status}")
+
+    gradle(project_dir: File.expand_path("..", __dir__), task: "bundleRelease", properties: properties)
+
+    upload_to_play_store(
+      package_name: PACKAGE_NAME,
+      json_key: play_json_key,
+      aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
+      track: track,
+      release_status: status,
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+    )
+  end
+end

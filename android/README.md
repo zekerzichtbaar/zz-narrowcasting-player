@@ -85,5 +85,18 @@ Release builds have the same mock behind the demo link
   missing or wrong, Android opens the QR in the browser instead of the app.
 - **CMS `/setup` page:** on Android it should link to the Play Store listing, since without the app the
   QR lands there. The hotspot route stays as the fallback.
-- Play Console: upload `app-release.aab`. Declare that the app uses Bluetooth only to set up the
-  screen and doesn't derive location (`neverForLocation`). Give review the demo link.
+- **Upload with fastlane** (`brew install fastlane`), from `android/`. The Play service account goes in
+  `fastlane/.env` (git-ignored) as `PLAY_JSON_KEY_PATH=...`; it's the same Zeker Zichtbaar account as BC SDVB.
+
+  ```sh
+  fastlane android verify_auth    # credentials work and the app exists in Play Console
+  fastlane android listing        # Dutch texts, icon, feature graphic, screenshots from fastlane/metadata
+  fastlane android release        # signed bundle, next versionCode, internal track as a draft
+  fastlane android release track:production status:completed version_name:1.1
+  ```
+
+  Play Console has to create the app itself: *Create app*, package `nl.zekerzichtbaar.narrowcasting`.
+  Until the app has been published once, Play only accepts draft releases, so roll out the first
+  one by hand. Console also needs the privacy policy, data safety, content rating and target
+  audience forms. In data safety, say the app collects no data. For Bluetooth, say it's used only to set up
+  the screen and doesn't derive location (`neverForLocation`). Give review the demo link.

@@ -1,0 +1,14 @@
+Met Narrowcasting stel je de wifi van een Narrowcasting-scherm van Zeker Zichtbaar in, rechtstreeks vanaf je telefoon.
+
+Zo werkt het:
+• Zet het scherm aan. Zonder netwerk toont het "Wifi instellen" met een QR-code.
+• Scan de QR-code met de camera of met de app.
+• De app vindt het scherm via Bluetooth en toont de wifi-netwerken die het scherm ziet.
+• Kies het netwerk en vul het wachtwoord in. Je ziet meteen of het lukt, of wat er misging.
+• Zodra het scherm online is, zie je de koppelcode. Daarmee koppel je het scherm in Narrowcasting.
+
+Je telefoon blijft de hele tijd op zijn eigen netwerk. Het wachtwoord gaat versleuteld naar het scherm, met de sleutel uit de QR-code, die alleen op het scherm zelf staat.
+
+De app gebruikt Bluetooth alleen om het scherm in te stellen. Je locatie wordt niet gebruikt of opgeslagen. Op Android 8 tot en met 11 vraagt Android wel om toestemming voor locatie, omdat het systeem dat vereist om Bluetooth-apparaten in de buurt te vinden.
+
+Voor Narrowcasting-schermen van Zeker Zichtbaar.

@@ -1,0 +1,1 @@
+Eerste versie: stel de wifi van een Narrowcasting-scherm in via Bluetooth.

@@ -15,3 +15,5 @@ android/local.properties
 android/keystore.properties
 android/.idea/
 *.jks
+android/fastlane/.env
+android/fastlane/report.xml
