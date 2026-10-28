@@ -9,18 +9,22 @@ WIFI_SETUP, PAIRING, WAITING, PLAYING = "WIFI_SETUP", "PAIRING", "WAITING", "PLA
 OFFLINE_GRACE = 30.0
 
 
-def decide(network_ok, linked, has_token, has_content, offline_since, now, setup_left, grace=OFFLINE_GRACE):
+def decide(network_ok, linked, has_token, has_content, offline_since, now, setup_left, forced=False,
+           grace=OFFLINE_GRACE):
     """The state to show.
 
     linked: NetworkManager is connected (hotspot excluded), whether or not the CMS answers.
     offline_since: when the network was last seen going away (None while online).
     setup_left: seconds left in the setup window after boot (SetupWindow), <= 0 = closed.
+    forced: the window was opened from the CMS ("Wifi opnieuw instellen"): setup also while online.
     Offline policy: a paired Pi with content always plays. Only right after a boot without any
     connection it shows WIFI_SETUP first, for the setup window (the countdown), then plays. A
     wifi without internet or a CMS that is down never brings up the hotspot there: it can't help.
     Pairing/waiting screens are useless offline, so they give way to WIFI_SETUP after the grace.
     Network back -> the normal state.
     """
+    if forced and setup_left > 0:
+        return WIFI_SETUP
     if not network_ok:
         away = now - offline_since if offline_since is not None else float("inf")
         if has_token and has_content:
@@ -48,14 +52,22 @@ class OfflineTimer:
 
 class SetupWindow:
     """The wifi-setup countdown after a boot: open for `timeout` s from agent start, closed for good
-    (until the next boot) once the network was seen. A restart is how someone asks for the setup."""
+    (until the next boot) once the network was seen. A restart is how someone asks for the setup.
+    open(): the same countdown on request from the CMS, also while online (`forced`); it ends early
+    only once a network was set up from the phone (`joined`), not when the old wifi answers."""
 
     def __init__(self, now, timeout):
         self.until = now + timeout
+        self.forced = False
 
-    def update(self, network_ok, now):
-        if network_ok:
+    def open(self, now, timeout):
+        self.until, self.forced = now + timeout, True
+
+    def update(self, network_ok, now, joined=False):
+        if joined or (network_ok and not self.forced):
             self.until = 0.0
+        if self.until <= now:
+            self.forced = False
         return self.until - now
 
     def hold(self, now, keep):
@@ -104,6 +116,18 @@ def _selfcheck():
     # a phone on the hotspot at the end holds the countdown
     assert walk(((30, False), (590, False), (650, False), (720, False)), phone=lambda t: t < 700) == \
         [WIFI_SETUP, WIFI_SETUP, WIFI_SETUP, PLAYING]
+    # "Wifi opnieuw instellen" from the CMS: setup while online, old wifi answering keeps it,
+    # a network set up from the phone or the countdown ends it
+    win = SetupWindow(0.0, T)
+    assert win.update(True, 1) <= 0  # booted online: closed
+    win.open(100.0, T)
+    assert win.forced and decide(True, True, True, True, None, 100.0, win.update(True, 100.0), win.forced) == WIFI_SETUP
+    assert decide(True, True, True, True, None, 300.0, win.update(True, 300.0), win.forced) == WIFI_SETUP
+    assert decide(True, True, True, True, None, 700.0, win.update(True, 700.0), win.forced) == PLAYING
+    assert not win.forced
+    win.open(1000.0, T)
+    assert decide(True, True, True, True, None, 1100.0, win.update(True, 1100.0, joined=True), win.forced) == PLAYING
+    assert decide(False, False, True, True, 1200.0, 1300.0, win.update(False, 1300.0), win.forced) == PLAYING
     print("state self-check OK")
 
 

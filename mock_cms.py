@@ -25,6 +25,7 @@ Admin (curl):
   POST /admin/update[?version=v1.3.0][&url=...]   "Speler bijwerken": `update` in every manifest until a
                                  heartbeat reports that agent_version (no version = clear); each call = a new `attempt`
                                  (retries a failed update of the same version); rings `poll`
+  POST /admin/wifi-setup         "Wifi opnieuw instellen": wifi_setup = now in every manifest for 5 min; rings `poll`
   POST /admin/unpair[?device_id=pi-...]   revoke tokens (all, or that device's): next call gets 401
   POST /admin/pair[?token=T]     re-enable the hand-provisioned --token (or add token T)
   POST /admin/poll               ring `poll` on the bel
@@ -50,7 +51,7 @@ import urllib.parse
 
 from pi_player.bell import accept_key, encode_frame, read_frame
 
-STATE = {"manifest": None, "identify_until": 0, "rotation": 0, "update": None}
+STATE = {"manifest": None, "identify_until": 0, "rotation": 0, "update": None, "wifi_setup": 0}
 TOKENS = {}  # device token -> {"device_id", "screen"}; the --token one is added in main()
 CODES = {}   # pairing code -> {"device_id", "expires_at", "token"|None}
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
@@ -322,12 +323,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             m = STATE["manifest"]
             screen = TOKENS.get(bearer(self.headers), {}).get("screen")
             until = STATE["identify_until"] if STATE["identify_until"] > time.time() else 0
+            wifi = STATE["wifi_setup"] if STATE["wifi_setup"] > time.time() - 300 else None
             if m:
                 return self._json(200, {**m, "identify_until": until, "rotation": STATE["rotation"],
-                                        "update": STATE["update"], "screen": screen or m["screen"]})
-            if until or STATE["update"]:
+                                        "update": STATE["update"], "wifi_setup": wifi, "screen": screen or m["screen"]})
+            if until or STATE["update"] or wifi:
                 return self._json(200, {"version": None, "identify_until": until, "rotation": STATE["rotation"],
-                                        "update": STATE["update"],
+                                        "update": STATE["update"], "wifi_setup": wifi,
                                         "screen": screen or {"id": "scr_1", "name": "Mock screen", "group_id": "grp_1"}})
             return self._json(204)
         if url.path.startswith("/media/"):
@@ -383,6 +385,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("update", json.dumps(STATE["update"]))
             ring("poll")
             return self._json(200, {"update": STATE["update"]})
+        if url.path == "/admin/wifi-setup":
+            STATE["wifi_setup"] = int(time.time())
+            log("wifi setup asked", STATE["wifi_setup"])
+            ring("poll")
+            return self._json(200, {"wifi_setup": STATE["wifi_setup"]})
         if url.path == "/admin/unpublish":
             STATE["manifest"] = None
             ring("poll")

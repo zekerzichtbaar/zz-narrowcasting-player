@@ -186,6 +186,7 @@ class Content:
         self.switch_at = None  # set once next.mp4 is verified and waiting
         self.identify = 0  # identify_until (Unix s) of the last manifest; not persisted
         self.update = None  # `update` of the last manifest ("Speler bijwerken"); not persisted
+        self.wifi_setup = 0  # wifi_setup (Unix s) of the last manifest ("Wifi opnieuw instellen"); not persisted
         p = self.state["pending"]
         if p and os.path.exists(self.next):  # survived a restart: verified earlier
             self.switch_at = switch_time(p, time.time(), self.has_current())
@@ -239,6 +240,11 @@ class Content:
     def identify_until(self):
         with self.lock:
             return self.identify
+
+    def wifi_setup_request(self):
+        """When the CMS asked "Wifi opnieuw instellen" (Unix s, an id for the request), 0 when not."""
+        with self.lock:
+            return self.wifi_setup
 
     def rotation(self):
         """How the panel hangs (0, 90, 270 clockwise), from the last manifest that said; kept in
@@ -296,6 +302,8 @@ class Content:
         with self.lock:  # identifying and updates are outside version: take them from every answer
             self.identify = float((m or {}).get("identify_until") or 0)
             self.update = (m or {}).get("update")
+            w = (m or {}).get("wifi_setup")
+            self.wifi_setup = w if isinstance(w, int) and not isinstance(w, bool) else 0
         if m and m.get("screen"):
             self.set_screen(m["screen"])
         if m and "rotation" in m:  # outside version too: turning needs no download, also when version null
@@ -484,6 +492,13 @@ def _selfcheck():
             served["m"] = wait  # asked update done (or an older CMS without the field)
             c.check()
             assert c.update_request() is None
+            # "Wifi opnieuw instellen": same version, nothing downloaded; junk = not asked
+            served["m"] = {**wait, "wifi_setup": 1767225600}
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.wifi_setup_request() == 1767225600
+            served["m"] = {**wait, "wifi_setup": "x"}
+            c.check()
+            assert c.wifi_setup_request() == 0
             # rotation: same version, nothing downloaded, taken over and kept in state.json
             served["m"] = {**wait, "rotation": 90, "orientation": "portrait"}
             c.check()

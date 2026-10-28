@@ -228,7 +228,12 @@ When wifi setup shows:
   laatste versie*, for `offline_timeout` (10 min) after the start. Then it plays the last version
   and never shows setup again until the next start. While a phone is on the hotspot the countdown
   holds at 1 min. A network that comes back during the countdown ends it: the screen plays.
-  So to set up a new wifi on a playing screen: **turn it off and on**.
+  So to set up a new wifi on a playing screen whose old wifi is gone: **turn it off and on**.
+- **Asked from the CMS** ("Wifi opnieuw instellen" in the screen's menu on `/schermen`, Zeker
+  Zichtbaar only), e.g. to move from the guest wifi to the own one while the old one still works:
+  the same setup screen and countdown right away (mock: `curl -X POST localhost:8080/admin/wifi-setup`).
+  It ends once a network was set up from the phone; otherwise the screen plays on over the old wifi
+  after 10 min.
 - **Network lost while playing:** the screen keeps playing, however long it takes. The CMS shows
   it as offline (and mails after 15 min within opening hours).
 - **While the hotspot is up:** every `wifi_retry` (2 min) the Pi drops the hotspot briefly

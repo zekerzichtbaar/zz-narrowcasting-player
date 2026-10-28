@@ -117,6 +117,7 @@ class Agent:
         self.timer = state.OfflineTimer(time.monotonic())  # monotonic: no RTC, NTP jumps the wall clock days
         self.setup = state.SetupWindow(time.monotonic(), float(cfg["offline_timeout"]))
         self.setup_left = 0.0
+        self.wifi_asked = 0  # the CMS's last "Wifi opnieuw instellen" we acted on
         self.shown = None  # (key, rotation) of the screen on HDMI; None = video or nothing
 
     def rotation(self):
@@ -130,11 +131,20 @@ class Agent:
             return state.PLAYING if has_video else state.WAITING
         net = self.monitor.ok if self.monitor else True
         linked = self.monitor.linked if self.monitor else True
+        asked = self.content.wifi_setup_request()
+        if self.wifi and asked and asked != self.wifi_asked:
+            # ponytail: remembered in memory only; an agent restart while the CMS still sends the same
+            # request (5 min) opens the setup once more
+            self.wifi_asked = asked
+            self.wifi.joined = None  # a network joined in an earlier setup must not end this one
+            self.setup.open(now, float(self.cfg["offline_timeout"]))
+            log.info("wifi setup asked by the CMS")
         if self.wifi and 0 < self.setup_left < 60 and self.wifi.clients():
             self.setup.hold(now, 60)  # ponytail: iw only in the last minute, the countdown stays at 1 min
-        self.setup_left = self.setup.update(net, now)
+        joined = bool(self.wifi and self.wifi.joined)
+        self.setup_left = self.setup.update(net, now, joined)
         return state.decide(net, linked, bool(self.content.token()), has_video, self.timer.update(net, now), now,
-                            self.setup_left)
+                            self.setup_left, self.setup.forced)
 
     def screen_key(self, st):
         if st == state.PAIRING:

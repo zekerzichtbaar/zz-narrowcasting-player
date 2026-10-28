@@ -33,8 +33,9 @@ class Unauthorized(Exception):
 # ---------- pure helpers ----------
 
 def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms, uptime, ip, network,
-                      update=None):
-    """`update` = updater.update_report() of update.json; the key is left out without one."""
+                      update=None, storage=None):
+    """`update` = updater.update_report() of update.json; `storage` = storage_report(). Each key is
+    left out without one."""
     payload = {
         "device_id": device_id,
         "agent_version": __version__,
@@ -49,7 +50,23 @@ def heartbeat_payload(device_id, now, state, version, pending_version, drift_ms,
     }
     if update is not None:
         payload["update"] = update
+    if storage is not None:
+        payload["storage"] = storage
     return payload
+
+
+def storage_report(state_dir):
+    """{free_bytes, used_bytes} for "Opslag" in the CMS: free space on the disk of the state dir and
+    what we keep there ourselves (current + next mp4), so the CMS's "fits" rule (playlist <= free +
+    used) holds. None when the disk can't be read."""
+    import shutil
+    try:
+        free = shutil.disk_usage(state_dir).free
+        with os.scandir(state_dir) as it:
+            used = sum(e.stat().st_size for e in it if e.is_file(follow_symlinks=False))
+    except OSError:
+        return None
+    return {"free_bytes": free, "used_bytes": used}
 
 
 def due(key, last_key, since_last, every=HEARTBEAT_EVERY):
@@ -136,7 +153,8 @@ class Heartbeat:
                 payload = heartbeat_payload(self.device_id, time.time(), state, version, pending,
                                             STATUS["drift_ms"], time.time() - self.started,
                                             local_ip(self.cfg["cms_url"]), network_kind(),
-                                            update and dict(zip(("version", "status", "reason", "attempt"), update)))
+                                            update and dict(zip(("version", "status", "reason", "attempt"), update)),
+                                            storage_report(self.content.dir))
                 # Counts as sent also on failure: retry at the next 30 s, not every tick.
                 last_key, last_sent = key, time.monotonic()
                 try:
@@ -216,6 +234,16 @@ def _selfcheck():
     hbu = heartbeat_payload("pi-1", 0, "PLAYING", "v1", None, None, 0, None, None, rep)
     assert hbu["update"] == rep and {k: v for k, v in hbu.items() if k != "update"} == \
         heartbeat_payload("pi-1", 0, "PLAYING", "v1", None, None, 0, None, None)
+
+    # storage: free disk + our own files in the state dir; unreadable dir = left out
+    d = tempfile.mkdtemp()
+    open(os.path.join(d, "current.mp4"), "wb").write(b"x" * 1000)
+    open(os.path.join(d, "next.mp4"), "wb").write(b"x" * 500)
+    st = storage_report(d)
+    assert st["used_bytes"] == 1500 and st["free_bytes"] > 0, st
+    assert storage_report(os.path.join(d, "missing")) is None
+    assert heartbeat_payload("pi-1", 0, "PLAYING", "v1", None, None, 0, None, None, None, st)["storage"] == st
+    assert "storage" not in hb
 
     # Heartbeat._status reads update.json from the state dir; its change makes the heartbeat due
     class FakeContent:

@@ -121,6 +121,7 @@ Response `200`:
   "orientation": "landscape",
   "rotation": 0,
   "update": null,
+  "wifi_setup": null,
   "screen": { "id": "scr_42", "name": "Kantine links", "group_id": "grp_7" }
 }
 ```
@@ -129,8 +130,8 @@ Response `200` with `"version": null` (or `204` from an older CMS): paired but n
 no playlist, nothing published, or no version of the playlist ever got a video. Pi shows `WAITING`;
 a video it had (e.g. from before an unpair/re-pair, or after the CMS unpublished) is deleted. The
 body still carries `rotation` (an idle portrait screen turns its own screens), `identify_until`
-(show the name while the screen is identified, `0` = not), `update` and `screen`:
-`{"version": null, "identify_until": 0, "rotation": 90, "update": null, "screen": {...}}`.
+(show the name while the screen is identified, `0` = not), `update`, `wifi_setup` and `screen`:
+`{"version": null, "identify_until": 0, "rotation": 90, "update": null, "wifi_setup": null, "screen": {...}}`.
 A newly published version whose video is still being made (or failed) is **not** this: the CMS
 keeps serving the previous video, with the same `version` as before, so the Pi does not even
 switch. Once the new video is ready, `version` changes.
@@ -150,6 +151,7 @@ Fields:
 | `orientation` | string | `landscape` or `portrait`: the format of the playlist. Informational; the Pi plays whatever size the file has (fitted, black bars). A portrait playlist on a panel at `rotation` 90/270 comes as a 1920x1080 file with the picture already turned (see `rotation`). |
 | `rotation` | int | How the panel physically hangs: `0`, `90` or `270` degrees turned **clockwise** (CMS "Stand van het scherm"). The Pi only turns its own setup/waiting/wifi/identify screens with it (picture turned back the other way: 90 -> 90 degrees counter-clockwise) and keeps the value in `state.json` for restarts without network. The Pi **never turns the video** (too heavy on a Pi 4): for a portrait playlist on a panel at 90/270 the CMS serves a variant of the render with the picture already turned that way (`url`, `sha256`, `size` and `version` are the variant's), a plain 1920x1080 file that plays zero-copy like a landscape one. A rotation change therefore reaches the video as a new `version` (a different file); the field itself is **not** part of `version`. Also in the `version: null` body. Missing (older CMS) = keep the last one. |
 | `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz", "attempt": 1760437213}`, the release this player should install, or `null`. `attempt` (optional) is unique per request in the CMS (a new one on every "Speler bijwerken" / "Opnieuw proberen", e.g. the request time in Unix seconds): a positive int or a short token (`[A-Za-z0-9][A-Za-z0-9._+-]{0,63}`); the Pi compares it as a string for equality only and ignores an invalid one (as if missing). A failed update is retried only when `attempt` changes (section 7). Missing `attempt` (older CMS) = a failed version is never tried again. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
+| `wifi_setup` | int \| null | "Wifi opnieuw instellen" in the CMS (Zeker Zichtbaar only): the request time (Unix s, new per click), served for 5 minutes, else `null`. A new value opens the wifi-setup screen with its countdown (`offline_timeout`), also while the wifi works; it ends early only once a network was set up from the phone, otherwise the Pi plays on over its old wifi after the countdown. Also in the `version: null` body. **Not** part of `version`. The Pi remembers the last value it acted on in memory (an agent restart within the 5 minutes opens the setup once more). Missing (older CMS) or not an int = not asked. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = now mod duration` (epoch 0; the manifest's `epoch` is ignored, a CMS once
@@ -199,6 +201,7 @@ Request:
   "uptime": 86400,
   "ip": "192.168.1.42",
   "network": "wifi",
+  "storage": {"free_bytes": 24800000000, "used_bytes": 21300000},
   "update": {"version": "v1.3.0", "status": "failed", "reason": "install: install.sh exited 3", "attempt": "1760437213"}
 }
 ```
@@ -215,6 +218,7 @@ next heartbeat simply follows 30 s later.
 | `network` | `ethernet` \| `wifi` (`null` if neither is up) |
 | `agent_version` | player release: the git tag, `v` included (`v1.2.3`); `dev` or `dev-<git describe>` for a build that is not a tagged release |
 | `ip` | local IPv4 address the Pi routes to the CMS from (`null` if unknown) |
+| `storage` | `{"free_bytes", "used_bytes"}`: free space on the disk of the state dir and the size of the files the player keeps there (current + next mp4), for "Opslag" and "past" in the CMS (playlist <= free + used). Left out when the disk can't be read. The CMS keeps the last value when it is missing, clears it on an explicit `null` and ignores an invalid one. |
 | `update` | the last update this Pi tried, from `update.json` (section 7): `{"version", "status": "running"\|"done"\|"failed", "reason", "attempt"}`. `reason` (max 500 chars, English, e.g. `download: ...`, `install: install.sh exited 3`, `no heartbeat within 300 s`, `start: ...`) only with `failed`, else `null`; `attempt` = the manifest's `update.attempt` that started it, as a **string** (`null` when the CMS sent none). Left out when the Pi never tried an update. A failure belongs to the CMS's current request only when `version` and `attempt` both match it; an older one is history. |
 
 The CMS uses it as "online" (last seen) and as the stored version for group activation:
