@@ -257,7 +257,7 @@ class Monitor:
     """Is the Pi online: NetworkManager connected (not counting our hotspot) AND the CMS answering.
     A wifi without internet is "connected" for NM, so the CMS probe decides. Probes in a thread
     (every NET_CHECK_EVERY s), so a slow nmcli/DNS never stalls the main loop. `ok` is the latest
-    answer; the state machine's OfflineTimer turns it into WIFI_SETUP after `offline_timeout`.
+    answer; `linked` the latest NM answer (a dead CMS behind a working wifi: the hotspot can't help).
 
     ponytail: an own GET /up instead of watching the manifest/heartbeat results, so the check
     also works while pairing and has one owner. Costs one tiny request per 30 s."""
@@ -267,7 +267,7 @@ class Monitor:
         self.nm_ok = nm_ok or (lambda: is_online(devices()) if available() else True)  # dev: no nmcli
         self.cms_ok = cms_ok or (lambda: cms_reachable(cms_url))
         self.clock = clock
-        self.ok = False
+        self.ok = self.linked = False
         self.fails = 0
         self.checked = -1e9
         self.ok = self.check()
@@ -284,7 +284,8 @@ class Monitor:
         """One sample. NM down = offline straight away (cheap, authoritative). While the CMS
         answered, it is probed only every CMS_CHECK_EVERY s, and one failed probe after a good
         one is retried on the next tick before it counts (one lost request is no outage)."""
-        if not self.nm_ok():
+        self.linked = self.nm_ok()
+        if not self.linked:
             self.fails, self.checked = 0, -1e9
             return False
         now = self.clock()
@@ -776,32 +777,33 @@ def _selfcheck_online():
     net["nm"] = True
     assert tick() and net["probes"] == n + 1  # NM back: probe straight away
 
-    # via the state machine: wifi without internet -> WIFI_SETUP after offline_timeout
+    # via the state machine: wifi without internet never brings up the hotspot for a playing Pi,
+    # not even inside the setup window after a boot (`linked`: NM is still connected)
     T = 600.0
     net["cms"] = True
-    m = Monitor("http://cms", nm_ok=lambda: True, cms_ok=cms, clock=lambda: t[0])
-    timer, now = state.OfflineTimer(t[0]), t[0]
+    m = Monitor("http://cms", nm_ok=lambda: net["nm"], cms_ok=cms, clock=lambda: t[0])
+    timer, win = state.OfflineTimer(t[0]), state.SetupWindow(t[0], T)
     seen = []
     for step in range(200):  # 1000 s in NET_CHECK_EVERY steps
         if step == 10:
             net["cms"] = False  # the wifi stays "connected", the internet goes away
         ok = tick()
-        now = t[0]
-        seen.append(state.decide(ok, True, True, timer.update(ok, now), now, T))
-    lost = seen.index(state.WIFI_SETUP)
-    assert set(seen[:lost]) == {state.PLAYING} and set(seen[lost:]) == {state.WIFI_SETUP}, seen
-    assert T <= (lost - 10) * NET_CHECK_EVERY <= T + 2 * NET_CHECK_EVERY, lost
-    net["cms"] = True  # internet back: resumes playing on the next probe
+        seen.append(state.decide(ok, m.linked, True, True, timer.update(ok, t[0]), t[0], win.update(ok, t[0])))
+    assert not ok and m.linked and set(seen) == {state.PLAYING}, seen
+    win = state.SetupWindow(t[0], T)  # as if just booted like this
+    assert state.decide(ok, m.linked, True, True, timer.update(ok, t[0]), t[0], win.update(ok, t[0])) == state.PLAYING
+    net["nm"] = False  # no connection at all inside the window: setup
     ok = tick()
-    assert state.decide(ok, True, True, timer.update(ok, t[0]), t[0], T) == state.PLAYING
-    # not paired yet: pairing screen gives way after the short grace
+    assert not m.linked
+    assert state.decide(ok, m.linked, True, True, timer.update(ok, t[0]), t[0], win.update(ok, t[0])) == state.WIFI_SETUP
+    net["nm"] = net["cms"] = True
+    # not paired yet: pairing screen gives way after the short grace, also behind a dead CMS
     net["cms"] = False
     m = Monitor("http://cms", nm_ok=lambda: True, cms_ok=cms, clock=lambda: t[0])
     timer = state.OfflineTimer(t[0], online=m.ok)
-    assert state.decide(m.ok, False, False, timer.update(m.ok, t[0]), t[0], T) == state.PAIRING
+    assert state.decide(m.ok, m.linked, False, False, timer.update(m.ok, t[0]), t[0], T) == state.PAIRING
     t[0] += state.OFFLINE_GRACE
-    assert state.decide(m.check(), False, False, timer.update(False, t[0]), t[0], T) == state.WIFI_SETUP
-
+    assert state.decide(m.check(), m.linked, False, False, timer.update(False, t[0]), t[0], T) == state.WIFI_SETUP
 
 if __name__ == "__main__":
     _selfcheck()

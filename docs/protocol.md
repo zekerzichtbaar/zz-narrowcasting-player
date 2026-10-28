@@ -234,7 +234,7 @@ the source, else the exact `v*` tag of a git checkout, else `dev-<git describe>`
 |---|---|
 | HTTP `401` (manifest or heartbeat) | delete token -> `PAIRING` |
 | manifest `204` | `WAITING` |
-| network errors | keep current state/video; retry with backoff; offline > `offline_timeout` while playing -> `WIFI_SETUP` |
+| network errors | keep current state/video; retry with backoff; with token + content never `WIFI_SETUP`, except for `offline_timeout` after a start without any NetworkManager connection (countdown, then playing) |
 | "offline" | NetworkManager not connected (hotspot excluded), or `GET <CMS>/up` gets no HTTP answer (DNS/connect/TLS/timeout; any status code counts as reachable) twice in a row. Probed every 30 s while it answers. A wifi without internet is offline. |
 | sha256 mismatch / download error | discard temp file, keep old video, retry on next manifest fetch |
 

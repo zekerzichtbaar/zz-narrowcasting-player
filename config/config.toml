@@ -6,7 +6,9 @@ cms_url = "http://localhost:8080"
 # Manifest poll (seconds): how fast a new version or group moment reaches this screen. The
 # heartbeat to the CMS also goes out every 30 s.
 manifest_poll = 30
-# Network lost while playing: keep playing this long (seconds), then show the wifi-setup screen.
+# Paired Pi with content, started without any connection: show the wifi-setup screen (with a
+# countdown) this long (seconds) after the start, then play. A network lost while playing never
+# brings up the setup screen: restart the Pi to set up a new wifi.
 offline_timeout = 600
 # While the wifi-setup hotspot is up: every this many seconds drop it briefly and try the saved
 # wifi networks again (postponed while someone is using the setup page).

@@ -115,6 +115,8 @@ class Agent:
         self.screen_dir = runtime_dir()
         self.footer = f"{pair.device_id if pair else pairing.device_id()} · pi-player {__version__}"
         self.timer = state.OfflineTimer(time.monotonic())  # monotonic: no RTC, NTP jumps the wall clock days
+        self.setup = state.SetupWindow(time.monotonic(), float(cfg["offline_timeout"]))
+        self.setup_left = 0.0
         self.shown = None  # (key, rotation) of the screen on HDMI; None = video or nothing
 
     def rotation(self):
@@ -127,8 +129,12 @@ class Agent:
         if self.content is None:  # dev: no state_dir, local file only
             return state.PLAYING if has_video else state.WAITING
         net = self.monitor.ok if self.monitor else True
-        return state.decide(net, bool(self.content.token()), has_video, self.timer.update(net, now), now,
-                            float(self.cfg["offline_timeout"]))
+        linked = self.monitor.linked if self.monitor else True
+        if self.wifi and 0 < self.setup_left < 60 and self.wifi.clients():
+            self.setup.hold(now, 60)  # ponytail: iw only in the last minute, the countdown stays at 1 min
+        self.setup_left = self.setup.update(net, now)
+        return state.decide(net, linked, bool(self.content.token()), has_video, self.timer.update(net, now), now,
+                            self.setup_left)
 
     def screen_key(self, st):
         if st == state.PAIRING:
@@ -137,7 +143,10 @@ class Agent:
         if st == state.WAITING:
             return (st, self.content.screen_name() if self.content else None)
         if st == state.WIFI_SETUP and self.wifi:
-            return (st,) + self.wifi.info() + (self.ble.url if self.ble and self.ble.registered else None,)
+            # countdown in whole minutes (one re-render a minute), only when content waits behind it
+            resume = -(-int(self.setup_left) // 60) if self.setup_left > 0 and self.content.token() \
+                and os.path.exists(self.cfg["video"]) else None
+            return (st,) + self.wifi.info() + (self.ble.url if self.ble and self.ble.registered else None, resume)
         return (st,)
 
     def show(self, key):
@@ -155,7 +164,7 @@ class Agent:
                 screens.identify(path, key[1], **common)
             else:
                 screens.wifi_setup(path, *key[1:5], **common, portal_url="http://" + netman.HOTSPOT_IP,
-                                   setup_url=key[5] if len(key) > 5 else None)
+                                   setup_url=key[5] if len(key) > 5 else None, resume=key[6] if len(key) > 6 else None)
         except Exception as e:  # e.g. Pillow/qrcode missing on a dev box: at least blank the video
             log.error("rendering %s screen failed: %s", st, e)
             self.display.close()

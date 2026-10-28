@@ -426,20 +426,27 @@ def update_label(path, rotation=0):
     return path
 
 
+def _resume(d, note):
+    """The boot countdown above the footer, left column (clear of the QR column on both layouts)."""
+    if note:
+        _text(d, (120, H - 112), note, 30, ACCENT, "semi", "ls", fit=W - 120 - 480 - 108 - 120)
+
+
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
-               portal_url="http://10.42.0.1", rotation=0, setup_url=None):
+               portal_url="http://10.42.0.1", rotation=0, setup_url=None, resume=None):
     """Wifi setup. With setup_url: a QR to the App Clip (Bluetooth) and the hotspot SSID + password as
     the route for other phones. Without: a join-QR for the hotspot plus a second QR (and the address) to
     the setup page for phones that don't open it by themselves (Private DNS, mobile data). Nothing to
     offer (no hotspot, no Bluetooth) or busy without a hotspot: a notice with the status/error, or
-    'connect ethernet'."""
+    'connect ethernet'. resume: minutes until a paired Pi plays its content again (boot countdown)."""
     from PIL import ImageDraw
     from .netman import wifi_qr
+    note = f"Over {resume} min speelt dit scherm verder met de laatste versie" if resume else None
     if not (ssid or setup_url) or (status and not ssid):
         img = _notice(_canvas(portrait(rotation)), footer, logo, status or "Geen netwerk", kicker="Wifi",
                       text=error or ("Het instelnetwerk komt zo terug" if status
                                      else "Sluit een netwerkkabel aan, of wacht op de wifi-instelling"),
-                      busy=bool(status) and not error, warn=not status or bool(error))
+                      busy=bool(status) and not error, warn=not status or bool(error), note=note)
         return _save(img, path, rotation)
     img = _canvas()
     d = ImageDraw.Draw(img, "RGBA")
@@ -472,6 +479,7 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
             _text(d, (198, y), error, 33, ERROR, "semi", "lt", fit=fit)
         elif status:
             _text(d, (198, y), status, 33, ACCENT, "semi", "lt", fit=fit)
+        _resume(d, note)
         _foot(img, d, footer)
         return _save(img, path, rotation)
     q = 320  # two QR cards stacked in the right column: 1 = join the hotspot, 2 = open the page
@@ -502,6 +510,7 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
         qy = 196 + i * (q + 84)
         _qr(img, data, qx, qy, q)
         _text(d, (qx + q // 2, qy + q + 18), label, 27, SOFT, anchor="mt")
+    _resume(d, note)
     _foot(img, d, footer)
     return _save(img, path, rotation)
 
@@ -558,6 +567,10 @@ if __name__ == "__main__":
         print(update_label(os.path.join(out, f"update-label-{r}.png"), r))
     clip = "https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw"
     print(wifi_setup(os.path.join(out, "wifi-clip.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, setup_url=clip))
+    print(wifi_setup(os.path.join(out, "wifi-clip-resume.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                     setup_url=clip, resume=9))
+    print(wifi_setup(os.path.join(out, "wifi-resume.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, resume=1))
+    print(wifi_setup(os.path.join(out, "wifi-none-resume.png"), footer=f, resume=10))
     print(wifi_setup(os.path.join(out, "wifi-clip-error.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
                      setup_url=clip, error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?"))
     print(wifi_setup(os.path.join(out, "wifi-clip-noap.png"), footer=f, setup_url=clip,
