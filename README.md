@@ -6,7 +6,7 @@ in sync with the others. When the CMS publishes a new version, all screens downl
 switch at the same moment. First-time setup (wifi and pairing) is done on the screen itself.
 
 - Protocol between Pi and CMS: [`docs/protocol.md`](docs/protocol.md)
-- Wifi setup over Bluetooth (App Clip): [`docs/ble-setup.md`](docs/ble-setup.md), iOS app in [`ios/`](ios/)
+- Wifi setup over Bluetooth (App Clip, Android app): [`docs/ble-setup.md`](docs/ble-setup.md), iOS app in [`ios/`](ios/), Android app in [`android/`](android/)
 - Mock CMS for local testing: `mock_cms.py`
 - Sync test video: `scripts/make_test_video.sh`
 
@@ -153,7 +153,7 @@ At any moment the screen shows exactly one of these four states:
 
 | State | When | Screen |
 |---|---|---|
-| `WIFI_SETUP` | offline: no network, or the CMS unreachable | QR to the App Clip, hotspot SSID + password (`setup_url = ""`: QR to join the hotspot, QR + address of the setup page) |
+| `WIFI_SETUP` | offline: no network, or the CMS unreachable | QR to the App Clip / Android app, hotspot SSID + password (`setup_url = ""`: QR to join the hotspot, QR + address of the setup page) |
 | `PAIRING` | network, not paired | pairing code + QR to the CMS pairing page |
 | `WAITING` | paired, nothing published | "Waiting for content" + screen name |
 | `PLAYING` | paired + video | the synced MP4 |
@@ -174,7 +174,7 @@ There are two ways to get a Pi on wifi. Both keep working side by side:
   template that comes with the image is left alone. To change the wifi later the same way, write a
   new `wifi.txt` to the card and boot.
 - **The phone**, the default when a customer powers the Pi up themselves: an iPhone with the App
-  Clip over Bluetooth, any other phone via the hotspot.
+  Clip or an Android phone with the app, both over Bluetooth; any other phone via the hotspot.
 
 Walkthrough of the phone routes on a fresh Pi with no ethernet:
 
@@ -187,8 +187,10 @@ Walkthrough of the phone routes on a fresh Pi with no ethernet:
    the clip shows the progress, the error (e.g. *Verkeerd wachtwoord?*) or, once the screen is
    online, its pairing code with a button to the CMS pairing page. The phone stays on its own
    network the whole time. Protocol: [`docs/ble-setup.md`](docs/ble-setup.md).
-3. **Other phones** (or an iPhone without the App Clip): join the hotspot by hand; scanning the
-   QR on Android opens a CMS page with the same steps. The phone's captive-portal sheet or
+   **Android:** the same with the *Narrowcasting* app from the Play Store. Scan the QR with the
+   camera (opens the app) or with *Scan de QR-code* in the app. See [`android/`](android/).
+3. **Other phones** (or a phone without the app): join the hotspot by hand; scanning the
+   QR on Android without the app opens a CMS page with the same steps. The phone's captive-portal sheet or
    notification should open the setup page by itself, usually within a few seconds: the hotspot's
    DHCP hands out the portal address (option 114, RFC 8910), every DNS name resolves to the Pi,
    and https probes are refused at once instead of timing out. **Nothing opens** (Android with
@@ -269,7 +271,7 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 | `manifest_poll` | `30` | Manifest poll interval in seconds. This poll is how new versions, group moments and unpublishes reach the screen. Re-running `install.sh` changes an old default of `300` to `30`. |
 | `offline_timeout` | `600` | Paired Pi with content, started without any connection: show wifi setup (with a countdown) this many seconds after the start, then play. A network lost while playing never brings up setup. |
 | `wifi_retry` | `120` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
-| `setup_url` | `https://app.zekerzichtbaar.tv/setup` | The wifi-setup QR opens this URL with `?d=<id>&k=<key>`: the App Clip on an iPhone (Bluetooth setup), the CMS fallback page elsewhere. Empty = no Bluetooth setup; the QR joins the hotspot. |
+| `setup_url` | `https://app.zekerzichtbaar.tv/setup` | The wifi-setup QR opens this URL with `?d=<id>&k=<key>`: the App Clip on an iPhone, the app on Android (Bluetooth setup), the CMS fallback page elsewhere. Empty = no Bluetooth setup; the QR joins the hotspot. |
 | `ntp_server` | `""` | chrony time source. Empty = the distro's internet pool. See [section 5](#5-time-sync-ntp). |
 | `logo` | `"/etc/pi-player/logo.png"` | Optional PNG shown top-left on the setup screens (max 360x140), instead of the Zeker Zichtbaar brand. If the file is missing, the brand shows. |
 | `state_dir` | `"/var/lib/pi-player"` | Token, `current.mp4`, `next.mp4`, `state.json`. |
@@ -418,6 +420,8 @@ clip from `ios/` and add a Local Experience for `https://app.zekerzichtbaar.tv/s
 5. Two screens side by side: each QR reaches only its own screen.
 6. Restart the agent (`sudo systemctl restart pi-player`) and use the old QR: the clip says the
    code is outdated; the new QR works.
+7. Repeat 2 to 6 with an Android phone and the app from [`android/`](android/) (`./gradlew installDebug`).
+   Also try an Android 8 to 11 phone with Location off: the app asks to turn it on.
 
 **`wifi.txt`** (SD-card reader + laptop):
 

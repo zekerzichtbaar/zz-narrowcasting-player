@@ -1,8 +1,9 @@
-# Wifi setup over Bluetooth (App Clip <-> Pi)
+# Wifi setup over Bluetooth (phone app <-> Pi)
 
 Version 1. The phone sets up the Pi's wifi over Bluetooth LE instead of joining the setup
-hotspot. The hotspot and captive portal stay up next to it as the fallback for Android and for
-phones without the App Clip.
+hotspot: on iOS with the App Clip or the app ([`ios/`](../ios/)), on Android with the app
+([`android/`](../android/)). The hotspot and captive portal stay up next to it as the fallback for
+phones without the app.
 
 ```
 TV (WIFI_SETUP screen)                     iPhone
@@ -27,7 +28,8 @@ token is only shown on the TV, and every command must be encrypted with it.
 | `d` | last 4 characters of the device ID, upper case (`1E2F`); same as the hotspot name `Narrowcast-1E2F` |
 | `k` | 16 random bytes, base64url without padding (22 characters). New on every agent start |
 
-On iOS the URL opens the App Clip (or the full app when installed). Anywhere else it opens the
+On iOS the URL opens the App Clip (or the full app when installed). On Android it opens the app
+when it's installed and the CMS serves `/.well-known/assetlinks.json` (App Link). Anywhere else it opens the
 CMS page `/setup`, which explains the hotspot route.
 
 ## Advertising
@@ -51,7 +53,9 @@ No pairing/bonding: no characteristic requires encryption, so iOS shows no pairi
 | COMMAND | `8edd2613-ddcd-4435-a57e-98a6b4dd342f` | write (with response) | encrypted frame, see below |
 
 All values are at most 512 bytes (ATT limit). iOS does long reads/writes (above the MTU) by
-itself; the Pi handles the `offset`.
+itself; the Pi handles the `offset`. Android requests an MTU of 517 right after connecting, so
+values fit in one read or write. Android also falls back to long reads/writes when the MTU stays
+lower.
 
 ### STATUS
 
@@ -106,7 +110,17 @@ with *insufficient authorization* (0x08): scan the QR on the screen again. A bad
 JSON, unknown op) fails with *unlikely error* (0x0e). A validation problem (password too short)
 is accepted and reported as STATUS `failed` with a message.
 
-## Test without the App Clip
+## Android notes
+
+- Matches on the service UUID (scan filter) and `ScanRecord.getDeviceName() == "ZZ-" + d`, not
+  `BluetoothDevice.getName()` (cached).
+- One GATT operation at a time: the app queues MTU request, service discovery, the STATUS
+  CCCD write (notifications), and the reads and writes.
+- Write status 8 (insufficient authorization) means the QR is outdated, the same as on iOS.
+- Permissions: *Nearby devices* (`BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`) on
+  Android 12+. On Android 8 to 11, Location permission, and Location must be on for scans to return results.
+
+## Test without the phone app
 
 `python3 -m pi_player.blesetup` runs the protocol self-check (framing, crypto, payloads). On a Pi,
 `bluetoothctl` -> `menu gatt` -> `list-attributes` shows the service while the setup screen is up.
