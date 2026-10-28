@@ -63,6 +63,11 @@ class SetupWindow:
     def open(self, now, timeout):
         self.until, self.forced = now + timeout, True
 
+    def close(self):
+        """"Wifi-scherm stoppen" from the CMS: only a window it opened, never the one after a boot."""
+        if self.forced:
+            self.until, self.forced = 0.0, False
+
     def update(self, network_ok, now, joined=False):
         if joined or (network_ok and not self.forced):
             self.until = 0.0
@@ -128,6 +133,12 @@ def _selfcheck():
     win.open(1000.0, T)
     assert decide(True, True, True, True, None, 1100.0, win.update(True, 1100.0, joined=True), win.forced) == PLAYING
     assert decide(False, False, True, True, 1200.0, 1300.0, win.update(False, 1300.0), win.forced) == PLAYING
+    win.open(2000.0, T)
+    win.close()  # "Wifi-scherm stoppen"
+    assert decide(True, True, True, True, None, 2001.0, win.update(True, 2001.0), win.forced) == PLAYING
+    boot = SetupWindow(0.0, T)
+    boot.close()  # never closes the window after a boot
+    assert boot.update(False, 10.0) > 0
     print("state self-check OK")
 
 

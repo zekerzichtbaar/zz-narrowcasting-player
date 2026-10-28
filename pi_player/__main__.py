@@ -118,6 +118,7 @@ class Agent:
         self.setup = state.SetupWindow(time.monotonic(), float(cfg["offline_timeout"]))
         self.setup_left = 0.0
         self.wifi_asked = 0  # the CMS's last "Wifi opnieuw instellen" we acted on
+        self.was_online = True
         self.shown = None  # (key, rotation) of the screen on HDMI; None = video or nothing
 
     def rotation(self):
@@ -131,8 +132,16 @@ class Agent:
             return state.PLAYING if has_video else state.WAITING
         net = self.monitor.ok if self.monitor else True
         linked = self.monitor.linked if self.monitor else True
+        if net and not self.was_online and self.setup.forced:
+            # Behind our own hotspot the CMS can't reach us: on each brief retry of the saved wifi
+            # fetch the manifest now, it may say "Wifi-scherm stoppen".
+            self.content.poke()
+        self.was_online = net
         asked = self.content.wifi_setup_request()
-        if self.wifi and asked and asked != self.wifi_asked:
+        if asked == 0 and self.setup.forced:
+            self.setup.close()
+            log.info("wifi setup stopped by the CMS")
+        elif self.wifi and asked and asked != self.wifi_asked:
             # ponytail: remembered in memory only; an agent restart while the CMS still sends the same
             # request (5 min) opens the setup once more
             self.wifi_asked = asked
