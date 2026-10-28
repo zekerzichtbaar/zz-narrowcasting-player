@@ -37,6 +37,10 @@ The Simulator has no Bluetooth: launch with `-mockSetup` (scheme option, off by 
 screen online with pairing code `K7Q-4M2`. A Simulator with the full app installed won't launch the
 clip; uninstall the app first.
 
+Release builds have the same mock behind the demo link
+`https://app.zekerzichtbaar.tv/setup?d=DEMO&k=AAECAwQFBgcICQoLDA0ODw` (device IDs are hex, so `DEMO` is
+never a real screen). App Review uses it, so keep it working.
+
 ## Run on an iPhone against a real screen
 
 1. Run the `NarrowcastingClip` scheme on the device. The scheme sets `_XCAppClipURL` to a sample

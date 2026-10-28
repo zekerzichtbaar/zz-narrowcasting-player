@@ -21,6 +21,9 @@ public struct SetupLink: Equatable, Sendable {
 
     public var localName: String { "ZZ-" + deviceID }
 
+    /// Device IDs are hex, so "DEMO" never matches a real screen; App Review uses it without a Pi.
+    public var isDemo: Bool { deviceID == "DEMO" }
+
     public init?(url: URL) {
         guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let d = items.first(where: { $0.name == "d" })?.value?.uppercased(),

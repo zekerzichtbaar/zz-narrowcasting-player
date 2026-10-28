@@ -38,6 +38,12 @@ private func bytes(hex: String) -> Data {
         #expect(link.deviceID == "1E2F")
     }
 
+    @Test func recognizesTheDemoLink() throws {
+        let demo = try #require(SetupLink(string: "https://app.zekerzichtbaar.tv/setup?d=demo&k=AAECAwQFBgcICQoLDA0ODw"))
+        #expect(demo.isDemo)
+        #expect(try #require(SetupLink(url: vectorURL)).isDemo == false)
+    }
+
     @Test(arguments: [
         "https://app.zekerzichtbaar.tv/setup",
         "https://app.zekerzichtbaar.tv/setup?d=1E2F",

@@ -17,7 +17,7 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     TARGETED_DEVICE_FAMILY: "1"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "3"
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
@@ -70,6 +70,7 @@ targets:
       base:
         PRODUCT_NAME: Narrowcasting
         PRODUCT_BUNDLE_IDENTIFIER: nl.zekerzichtbaar.narrowcasting
+        TARGETED_DEVICE_FAMILY: "1"
 
   NarrowcastingClip:
     type: application.on-demand-install-capable
@@ -106,6 +107,7 @@ targets:
       base:
         PRODUCT_NAME: NarrowcastingClip
         PRODUCT_BUNDLE_IDENTIFIER: nl.zekerzichtbaar.narrowcasting.Clip
+        TARGETED_DEVICE_FAMILY: "1"
 
   NarrowcastingClipUITests:
     type: bundle.ui-testing

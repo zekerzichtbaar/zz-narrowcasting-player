@@ -35,7 +35,7 @@ public struct SetupScreen: View {
         }
         .task(id: link) {
             client?.stop()
-            let transport: SetupTransport = SetupLaunch.isMock ? MockTransport() : BLETransport()
+            let transport: SetupTransport = SetupLaunch.isMock || link.isDemo ? MockTransport() : BLETransport()
             let new = SetupClient(link: link, transport: transport)
             new.start()
             client = new
