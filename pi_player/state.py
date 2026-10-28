@@ -51,13 +51,14 @@ class OfflineTimer:
 
 
 class SetupWindow:
-    """The wifi-setup countdown after a boot: open for `timeout` s from agent start, closed for good
+    """The wifi-setup countdown after a boot: open for `timeout` s from when the setup screen shows
+    (agent start + the grace), closed for good
     (until the next boot) once the network was seen. A restart is how someone asks for the setup.
     open(): the same countdown on request from the CMS, also while online (`forced`); it ends early
     only once a network was set up from the phone (`joined`), not when the old wifi answers."""
 
-    def __init__(self, now, timeout):
-        self.until = now + timeout
+    def __init__(self, now, timeout, grace=OFFLINE_GRACE):
+        self.until = now + grace + timeout
         self.forced = False
 
     def open(self, now, timeout):
@@ -110,7 +111,7 @@ def _selfcheck():
             seen.append(decide(net, linked, True, True, tm.update(net, now), now, left))
         return seen
     # booted offline: setup after the grace, countdown runs out, then plays for good
-    assert walk(((10, False), (30, False), (599, False), (600, False), (50_000, False))) == \
+    assert walk(((10, False), (30, False), (629, False), (630, False), (50_000, False))) == \
         [PLAYING, WIFI_SETUP, WIFI_SETUP, PLAYING, PLAYING]
     # booted with wifi but no CMS: plays straight away
     assert set(walk(((10, False), (30, False), (300, False)), linked=True)) == {PLAYING}

@@ -226,21 +226,23 @@ When wifi setup shows:
 - **New or unpaired Pi (or no content yet) without a network:** the wifi-setup screen appears
   after 30 s and stays until there is a network.
 - **Paired Pi with content, started without any connection** (NetworkManager not connected after
-  30 s): the wifi-setup screen with a countdown, *Over 10 min speelt dit scherm verder met de
-  laatste versie*, for `offline_timeout` (10 min) after the start. Then it plays the last version
-  and never shows setup again until the next start. While a phone is on the hotspot the countdown
-  holds at 1 min. A network that comes back during the countdown ends it: the screen plays.
+  30 s): the wifi-setup screen with a countdown, *Over 2 min speelt dit scherm verder met de
+  laatste versie*, for `offline_timeout` (2 min) from when it appears. Then it plays the last version
+  and never shows setup again until the next start. While a phone is on the hotspot, or the setup
+  page or the App Clip (Bluetooth) was used in the last minute, the countdown holds at 1 min. A network that comes back during the countdown ends it: the screen plays.
   So to set up a new wifi on a playing screen whose old wifi is gone: **turn it off and on**.
 - **Asked from the CMS** ("Wifi opnieuw instellen" in the screen's menu on `/schermen`, Zeker
   Zichtbaar only), e.g. to move from the guest wifi to the own one while the old one still works:
   the same setup screen and countdown right away (mock: `curl -X POST localhost:8080/admin/wifi-setup`).
   It ends once a network was set up from the phone; otherwise the screen plays on over the old wifi
-  after 10 min. "Wifi-scherm stoppen" in the same menu ends it early, within about 2 min: the Pi
+  after 2 min. "Wifi-scherm stoppen" in the same menu ends it early, within about 1 min: the Pi
   only hears it when it briefly retries its saved wifi (mock: `/admin/wifi-setup?stop=1`).
 - **Network lost while playing:** the screen keeps playing, however long it takes. The CMS shows
   it as offline (and mails after 15 min within opening hours).
-- **While the hotspot is up:** every `wifi_retry` (2 min) the Pi drops the hotspot briefly
-  and retries its saved networks. When a network (or ethernet) is back and the CMS answers, it
+- **While the hotspot is up:** every `wifi_retry` (1 min) the Pi drops the hotspot briefly
+  and retries its saved networks. The setup screen stays: the badge top right says what the Pi does
+  (*Netwerk zoeken*, *Verbinden*, else *Geen verbinding*), the hotspot part dims with *Het
+  instelnetwerk komt zo terug*; the App Clip QR keeps working (Bluetooth). When a network (or ethernet) is back and the CMS answers, it
   returns to normal. The retry waits while someone is setting up: after a request to the setup
   page, and as long as a phone is connected to the hotspot (`iw dev wlan0 station dump`), so
   the hotspot never drops away under a phone mid-setup.
@@ -269,8 +271,8 @@ The file is `/etc/pi-player/config.toml`. Restart the service after editing:
 |---|---|---|
 | `cms_url` | `"http://localhost:8080"` | CMS base URL. The device token lives in `<state_dir>/token` (0600, written by pairing). |
 | `manifest_poll` | `30` | Manifest poll interval in seconds. This poll is how new versions, group moments and unpublishes reach the screen. Re-running `install.sh` changes an old default of `300` to `30`. |
-| `offline_timeout` | `600` | Paired Pi with content, started without any connection: show wifi setup (with a countdown) this many seconds after the start, then play. A network lost while playing never brings up setup. |
-| `wifi_retry` | `120` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
+| `offline_timeout` | `120` | Paired Pi with content, started without any connection: show wifi setup (with a countdown) this many seconds from when it appears, then play. A network lost while playing never brings up setup. |
+| `wifi_retry` | `60` | While the hotspot is up: retry saved wifi networks every N seconds. The retry is postponed while someone is using the setup page. |
 | `setup_url` | `https://app.zekerzichtbaar.tv/setup` | The wifi-setup QR opens this URL with `?d=<id>&k=<key>`: the App Clip on an iPhone, the app on Android (Bluetooth setup), the CMS fallback page elsewhere. Empty = no Bluetooth setup; the QR joins the hotspot. |
 | `ntp_server` | `""` | chrony time source. Empty = the distro's internet pool. See [section 5](#5-time-sync-ntp). |
 | `logo` | `"/etc/pi-player/logo.png"` | Optional PNG shown top-left on the setup screens (max 360x140), instead of the Zeker Zichtbaar brand. If the file is missing, the brand shows. |
@@ -394,15 +396,15 @@ Rendering the PNGs needs Pillow and qrcode; on a Mac without them:
    should open http://10.42.0.1 with the setup page.
 6. Join the hotspot with a phone and leave it there without opening the page for more than
    3 minutes: the hotspot must stay up (the log says `phone on the setup hotspot, retry
-   postponed`). Then save a wifi that is out of range and repeat: the hotspot still stays up while the phone is on it. Disconnect the phone: about 2 min later the Pi retries its saved networks (without a saved wifi it never drops the hotspot to retry).
+   postponed`). Then save a wifi that is out of range and repeat: the hotspot still stays up while the phone is on it. Disconnect the phone: about 1 min later the Pi retries its saved networks (without a saved wifi it never drops the hotspot to retry).
 7. Pick the network and enter a wrong password first. The page says the hotspot goes off and to
    watch the tv. Within about 1 min the hotspot comes back, and the screen and (after
    rejoining) the page show *Verkeerd wachtwoord?*.
 8. Enter the correct password. The screen should show the pairing code.
 9. Turn that wifi AP off. Without content the setup screen should come back after 30 s; a
    playing screen keeps playing. Turn the AP back on: the Pi should rejoin within `wifi_retry`
-   (2 min). With content and the AP off, restart the Pi: after 30 s the setup screen with the
-   countdown, after 10 min the video.
+   (1 min). With content and the AP off, restart the Pi: after 30 s the setup screen with the
+   countdown, 2 min later the video.
 10. Plug in ethernet while the setup screen is showing. It should leave setup within about 5 s.
 
 In `journalctl -u pi-player -f`, look for `hotspot ... up`, `portal on` and `wifi: connected`.

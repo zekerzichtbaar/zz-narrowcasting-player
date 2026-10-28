@@ -169,6 +169,10 @@ else
     echo "    manifest_poll 300 -> 30 (HTTP protocol)"
   fi
   # The Pi no longer turns video (the CMS serves turned files): drop the old rotation settings.
+  if grep -qE '^(offline_timeout = 600|wifi_retry = 120)$' "$ETC/config.toml"; then
+    sed -i -E 's/^offline_timeout = 600$/offline_timeout = 120/; s/^wifi_retry = 120$/wifi_retry = 60/' "$ETC/config.toml"
+    echo "    wifi setup: countdown 2 min, saved networks retried every minute (old defaults)"
+  fi
   if grep -qE '^(rotate_method|gl_sink) = ' "$ETC/config.toml"; then
     sed -i -E '/^(rotate_method|gl_sink) = /d' "$ETC/config.toml"
     echo "    removed rotate_method/gl_sink (the CMS turns the video now)"

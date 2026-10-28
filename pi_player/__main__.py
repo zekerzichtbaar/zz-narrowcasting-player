@@ -148,7 +148,8 @@ class Agent:
             self.wifi.joined = None  # a network joined in an earlier setup must not end this one
             self.setup.open(now, float(self.cfg["offline_timeout"]))
             log.info("wifi setup asked by the CMS")
-        if self.wifi and 0 < self.setup_left < 60 and self.wifi.clients():
+        # A phone on the hotspot, or the portal / App Clip (Bluetooth) used within the last minute.
+        if self.wifi and 0 < self.setup_left < 60 and (now - self.wifi.activity < 60 or self.wifi.clients()):
             self.setup.hold(now, 60)  # ponytail: iw only in the last minute, the countdown stays at 1 min
         joined = bool(self.wifi and self.wifi.joined)
         self.setup_left = self.setup.update(net, now, joined)
@@ -183,7 +184,8 @@ class Agent:
                 screens.identify(path, key[1], **common)
             else:
                 screens.wifi_setup(path, *key[1:5], **common, portal_url="http://" + netman.HOTSPOT_IP,
-                                   setup_url=key[5] if len(key) > 5 else None, resume=key[6] if len(key) > 6 else None)
+                                   ap=key[5] if len(key) > 5 else None, setup_url=key[6] if len(key) > 6 else None,
+                                   resume=key[7] if len(key) > 7 else None)
         except Exception as e:  # e.g. Pillow/qrcode missing on a dev box: at least blank the video
             log.error("rendering %s screen failed: %s", st, e)
             self.display.close()

@@ -432,17 +432,27 @@ def _resume(d, note):
         _text(d, (120, H - 112), note, 30, ACCENT, "semi", "ls", fit=W - 120 - 480 - 108 - 120)
 
 
+def wifi_badge(status):
+    """Top-right badge of the wifi-setup screen: what the Pi is doing now, warn when nothing."""
+    if not status:
+        return "GEEN VERBINDING", True
+    return ("VERBINDEN" if status.startswith("Verbind") else "NETWERK ZOEKEN"), False
+
+
 def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="", logo=None,
-               portal_url="http://10.42.0.1", rotation=0, setup_url=None, resume=None):
+               portal_url="http://10.42.0.1", rotation=0, setup_url=None, resume=None, ap=None):
     """Wifi setup. With setup_url: a QR to the App Clip (Bluetooth) and the hotspot SSID + password as
     the route for other phones. Without: a join-QR for the hotspot plus a second QR (and the address) to
     the setup page for phones that don't open it by themselves (Private DNS, mobile data). Nothing to
     offer (no hotspot, no Bluetooth) or busy without a hotspot: a notice with the status/error, or
-    'connect ethernet'. resume: minutes until a paired Pi plays its content again (boot countdown)."""
+    'connect ethernet'. resume: minutes until a paired Pi plays its content again (boot countdown).
+    ap: the hotspot is up (default: an ssid was given). While it is briefly down (trying the saved
+    networks, connecting) the layout stays: the badge says what happens and the hotspot part dims."""
     from PIL import ImageDraw
     from .netman import wifi_qr
     note = f"Over {resume} min speelt dit scherm verder met de laatste versie" if resume else None
-    if not (ssid or setup_url) or (status and not ssid):
+    ap = bool(ssid) if ap is None else ap
+    if not setup_url and not (ssid and (ap or status)):
         img = _notice(_canvas(portrait(rotation)), footer, logo, status or "Geen netwerk", kicker="Wifi",
                       text=error or ("Het instelnetwerk komt zo terug" if status
                                      else "Sluit een netwerkkabel aan, of wacht op de wifi-instelling"),
@@ -450,7 +460,7 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
         return _save(img, path, rotation)
     img = _canvas()
     d = ImageDraw.Draw(img, "RGBA")
-    _head(img, d, logo, "GEEN VERBINDING", warn=True)
+    _head(img, d, logo, *wifi_badge(status))
     if setup_url:  # App Clip QR; the hotspot (if up) as the route for other phones
         fit = W - 120 - 480 - 108 - 198
         y = 236
@@ -461,7 +471,10 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
         _text(d, (198, y), "‘Scherm instellen’ opent en zet de wifi van het scherm voor je in", 27, MUTED,
               "sans", "lt", fit=fit)
         y += 27 + 54 + 27
-        if ssid:
+        if ssid and not ap:
+            _step(d, 120, y, 2, "Andere telefoon? Het instelnetwerk komt zo terug")
+            y += 27 + 18
+        elif ssid:
             _step(d, 120, y, 2, "Andere telefoon? Verbind met het wifi-netwerk:")
             y += 27 + 18
             _text(d, (198, y), ssid, 56, (255, 255, 255), "mono", "lt", fit=fit)
@@ -510,6 +523,10 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
         qy = 196 + i * (q + 84)
         _qr(img, data, qx, qy, q)
         _text(d, (qx + q // 2, qy + q + 18), label, 27, SOFT, anchor="mt")
+        if not ap:  # hotspot briefly down: the codes don't work right now
+            d.rounded_rectangle([qx, qy, qx + q, qy + q], radius=24, fill=BG + (190,))
+    if not ap:
+        _text(d, (198, y + 48), "Het instelnetwerk komt zo terug", 27, MUTED, "sans", "lt", fit=fit)
     _resume(d, note)
     _foot(img, d, footer)
     return _save(img, path, rotation)
@@ -531,6 +548,9 @@ def _selfcheck():
     assert out.size == (W, H) and out.getpixel((W // 2, H // 2)) == red and out.getpixel((10, H // 2)) == BG
     for kind in FONTS:  # the bundled fonts load, not the DejaVu fallback
         assert _font(20, kind).getname()[0] != "DejaVu Sans", kind
+    assert wifi_badge(None) == ("GEEN VERBINDING", True)
+    assert wifi_badge("Opgeslagen netwerken proberen…") == ("NETWERK ZOEKEN", False)
+    assert wifi_badge("Verbinden met Kantine…") == ("VERBINDEN", False)
     assert os.path.exists(ZZ_LOGO), ZZ_LOGO
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:  # update label: upright for the viewer, premultiplied
@@ -576,6 +596,10 @@ if __name__ == "__main__":
     print(wifi_setup(os.path.join(out, "wifi-clip-noap.png"), footer=f, setup_url=clip,
                      error="Het instelnetwerk start niet. Sluit een netwerkkabel aan."))
     print(wifi_setup(os.path.join(out, "wifi.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f))
+    print(wifi_setup(os.path.join(out, "wifi-retry.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, ap=False,
+                     status="Opgeslagen netwerken proberen…", resume=1))
+    print(wifi_setup(os.path.join(out, "wifi-clip-retry.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, ap=False,
+                     setup_url=clip, status="Opgeslagen netwerken proberen…", resume=2))
     print(wifi_setup(os.path.join(out, "wifi-error.png"), "Narrowcast-1E2F", "k7q4m2xa",
                      error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?", footer=f))
     print(wifi_setup(os.path.join(out, "wifi-busy.png"), status="Verbinden met Kantine…", footer=f))

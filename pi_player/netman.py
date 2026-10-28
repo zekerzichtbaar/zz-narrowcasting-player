@@ -355,8 +355,9 @@ class WifiSetup:
             self.jobs.put(None)
 
     def info(self):
-        return (self.ssid if self.ap_up else None, self.password if self.ap_up else None,
-                self.status, self.error or self.file_error)
+        """For the screen: hotspot name and password also while it is briefly down (the layout stays,
+        only the badge and the hotspot part change), plus whether it is up."""
+        return (self.ssid, self.password, self.status, self.error or self.file_error, self.ap_up)
 
     def touch(self):
         self.activity = time.monotonic()

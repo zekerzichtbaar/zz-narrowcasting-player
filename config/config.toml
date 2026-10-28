@@ -7,12 +7,12 @@ cms_url = "http://localhost:8080"
 # heartbeat to the CMS also goes out every 30 s.
 manifest_poll = 30
 # Paired Pi with content, started without any connection: show the wifi-setup screen (with a
-# countdown) this long (seconds) after the start, then play. A network lost while playing never
-# brings up the setup screen: restart the Pi to set up a new wifi.
-offline_timeout = 600
+# countdown) this long (seconds), then play. A network lost while playing never brings up the
+# setup screen: unplug the power and plug it back in to set up a new wifi.
+offline_timeout = 120
 # While the wifi-setup hotspot is up: every this many seconds drop it briefly and try the saved
 # wifi networks again (postponed while someone is using the setup page).
-wifi_retry = 120
+wifi_retry = 60
 # The wifi-setup QR opens this URL plus ?d=<id>&k=<key>: on an iPhone the App Clip "Scherm
 # instellen", which sets up wifi over Bluetooth (docs/ble-setup.md). Empty = no Bluetooth setup,
 # the QR joins the hotspot as before.
