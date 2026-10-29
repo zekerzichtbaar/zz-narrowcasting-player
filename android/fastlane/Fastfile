@@ -54,6 +54,30 @@ platform :android do
     )
   end
 
+  desc "Move the newest build on a testing track to production, without a new upload"
+  lane :promote do |options|
+    from = options[:from_track].to_s.empty? ? "internal" : options[:from_track].to_s
+    status = options[:status].to_s.empty? ? "draft" : options[:status].to_s
+    code = options[:version_code].to_s.empty? ? version_codes(from).map(&:to_i).max : options[:version_code].to_i
+    UI.user_error!("No release on the #{from} track to promote") if code.nil?
+    UI.message("Promoting versionCode #{code} from #{from} to production (#{status})")
+
+    upload_to_play_store(
+      package_name: PACKAGE_NAME,
+      json_key: play_json_key,
+      version_code: code,
+      track: from,
+      track_promote_to: "production",
+      track_promote_release_status: status,
+      skip_upload_aab: true,
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+    )
+  end
+
   desc "Build a signed bundle and upload it to a Play track"
   lane :release do |options|
     keystore = File.expand_path("../keystore.properties", __dir__)

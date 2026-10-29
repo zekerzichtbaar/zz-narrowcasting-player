@@ -65,7 +65,11 @@ def status(cms_url, dev_id, code, secret, timeout=15):
 
 def store_token(state_dir, token):
     """Write <state_dir>/token atomically with mode 0600 (never readable by others, not even briefly)."""
-    path = os.path.join(state_dir, "token")
+    write_private(os.path.join(state_dir, "token"), token)
+
+
+def write_private(path, text):
+    """Atomic write with mode 0600 from the first byte: a fresh tmp file (O_EXCL), then a rename."""
     tmp = path + ".tmp"
     try:
         os.unlink(tmp)
@@ -73,7 +77,7 @@ def store_token(state_dir, token):
         pass
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(token + "\n")
+        f.write(text + "\n")
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)

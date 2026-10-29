@@ -1,0 +1,1 @@
+Nieuw: beheer een scherm met de QR-sticker op de speler. Scan de sticker om de status te zien en de wifi te wisselen, ook als het scherm offline is.

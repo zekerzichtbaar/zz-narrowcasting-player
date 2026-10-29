@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:autoMirrored="true"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <group android:translateY="960">
+        <path android:fillColor="@android:color/white" android:pathData="M400-480l184 184q11 11 11 28t-11 28q-11 11-28 11t-28-11L316-452q-6-6-8.5-13T305-480q0-8 2.5-15t8.5-13l212-212q11-11 28-11t28 11q11 11 11 28t-11 28L400-480Z" />
+    </group>
+</vector>

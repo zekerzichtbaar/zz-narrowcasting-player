@@ -5,6 +5,11 @@ code (`https://app.zekerzichtbaar.tv/setup?d=..&k=..`) opens the app, which find
 its networks and sends the chosen one, encrypted with the token from the QR. Same protocol, same
 flow and the same Dutch texts as the iOS app. Protocol: [`../docs/ble-setup.md`](../docs/ble-setup.md).
 
+The QR sticker on a paired player (`https://app.zekerzichtbaar.tv/setup?d=..&s=..`) opens the same app in
+management mode: the screen's status (network, signal, IP, online, player version) and changing its wifi,
+also while it's online or offline. Protocol: [`../docs/ble-management.md`](../docs/ble-management.md).
+`k` in the link means first-time setup and wins; `s` without `k` means management.
+
 Android has no equivalent of App Clips, so the app has to be installed from the Play Store.
 Once it's installed, the QR opens it straight from the camera (App Link). The app also has its own QR
 scanner and a "paste the link" field.
@@ -14,7 +19,10 @@ scanner and a "paste the link" field.
 | `setup/Protocol.kt` | Link parsing, AES-GCM frames (HKDF key), STATUS/NETWORKS payloads, validation |
 | `setup/SetupClient.kt` | The state machine, a one-to-one port of `SetupClient.swift` |
 | `setup/BleTransport.kt` | GATT central; `MockTransport.kt` is the simulated Pi |
-| `ui/` | Compose flow: home + QR scanner, network list, password sheet, progress, pairing code |
+| `setup/ManageProtocol.kt` | Sticker link (`ScreenLink` picks setup or management), session key, frames, payloads |
+| `setup/ManageClient.kt` | Management state machine, a port of `ManageClient.swift` (candidates, handshake, retries, jobs) |
+| `setup/ManageBleTransport.kt` | GATT central for the management service; `MockManageTransport.kt` is the simulated paired Pi |
+| `ui/` | Compose flows: home + QR scanner, network list, password sheet, progress, pairing code, `ManageFlow.kt` |
 | `MainActivity.kt` | Entry point (launcher, App Link), `SetupModel` owns the flow across rotation |
 
 Package `nl.zekerzichtbaar.narrowcasting`, minSdk 26 (Android 8), targetSdk 36.
@@ -45,7 +53,7 @@ rejects such a bundle.
 ## Test
 
 ```sh
-./gradlew testDebugUnitTest            # protocol, crypto against the Pi's test vector, state machine, mock
+./gradlew testDebugUnitTest            # protocol, crypto against the Pi's test vectors, state machines, mocks
 ./gradlew connectedDebugAndroidTest    # UI flow against the simulated Pi, on an emulator
 ```
 
@@ -57,6 +65,23 @@ adb shell am start -n nl.zekerzichtbaar.narrowcasting/.MainActivity --ez mockSet
 ```
 
 In the mock, password `fout1234` fails and anything else gets the screen online with pairing code `K7Q-4M2`.
+
+To manage a simulated paired Pi (as if its sticker was scanned), launch with the extra `mockManage`:
+
+```sh
+adb shell am start -n nl.zekerzichtbaar.narrowcasting/.MainActivity --ez mockManage true
+```
+
+There, password `fout1234` fails and the screen falls back to "Kantine"; anything else switches it. The demo
+sticker `https://app.zekerzichtbaar.tv/setup?d=DEMO&s=0123456789abcdefghijklmnopqrstuvwxyzABCDEFG` opens
+the same simulated Pi in release builds.
+
+To check that the Pi can open a Kotlin-sealed management frame:
+
+```sh
+KOTLIN_MANAGE_FRAME_OUT=/tmp/frame.hex ./gradlew testDebugUnitTest --rerun
+cd .. && python3 -c "from pi_player import blemanage as m; k=m.session_key('0123456789abcdefghijklmnopqrstuvwxyzABCDEFG', bytes(range(16)), bytes(range(16,32))); print(m.unseal(k, m.REQUEST, bytes.fromhex(open('/tmp/frame.hex').read())))"
+```
 Release builds have the same mock behind the demo link
 `https://app.zekerzichtbaar.tv/setup?d=DEMO&k=AAECAwQFBgcICQoLDA0ODw` (device IDs are hex, so
 `DEMO` is never a real screen). Play review can use it, so keep it working.

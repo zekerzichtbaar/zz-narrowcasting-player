@@ -2,13 +2,48 @@
 import SwiftUI
 import WifiSetupKit
 
-/// Launch switches: `-mockSetup` (or env MOCK_SETUP=1) runs the flow against a simulated Pi.
+/// Launch switches: `-mockSetup` (or env MOCK_SETUP=1) runs the flow against a simulated Pi;
+/// `-mockManage` (or env MOCK_MANAGE=1) opens a sticker link against a simulated paired Pi.
 public enum SetupLaunch {
     public static let mockURL = URL(string: "https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw")!
+    public static let mockManageURL = URL(string: "https://app.zekerzichtbaar.tv/setup?d=1E2F&s=0123456789abcdefghijklmnopqrstuvwxyzABCDEFG")!
 
     public static var isMock: Bool {
         ProcessInfo.processInfo.arguments.contains("-mockSetup")
             || ProcessInfo.processInfo.environment["MOCK_SETUP"] == "1"
+    }
+
+    public static var isMockManage: Bool {
+        ProcessInfo.processInfo.arguments.contains("-mockManage")
+            || ProcessInfo.processInfo.environment["MOCK_MANAGE"] == "1"
+    }
+
+    /// The link a mock launch opens with, nil for a normal launch.
+    public static var initialLink: ScreenLink? {
+        if isMockManage { return ScreenLink(url: mockManageURL) }
+        return isMock ? ScreenLink(url: mockURL) : nil
+    }
+}
+
+/// First-time setup for a TV QR, management for a sticker.
+public struct ScreenLinkView: View {
+    let link: ScreenLink
+    var rescanQR: (() -> Void)?
+    var close: (() -> Void)?
+
+    public init(link: ScreenLink, rescanQR: (() -> Void)? = nil, close: (() -> Void)? = nil) {
+        self.link = link
+        self.rescanQR = rescanQR
+        self.close = close
+    }
+
+    public var body: some View {
+        switch link {
+        case let .setup(setup):
+            SetupScreen(link: setup, rescanQR: rescanQR, close: close)
+        case let .manage(manage):
+            ManageScreen(link: manage, rescanQR: rescanQR, close: close)
+        }
     }
 }
 

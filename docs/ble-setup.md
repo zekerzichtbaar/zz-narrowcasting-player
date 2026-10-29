@@ -18,6 +18,11 @@ Pi (BlueZ GATT server)  <── BLE ──────────  scans for se
 Being in front of the screen is the authorization, the same as with the hotspot password: the
 token is only shown on the TV, and every command must be encrypted with it.
 
+Managing a screen that is already paired (status, another wifi, also offline) goes through the QR
+sticker on the Pi instead: [`ble-management.md`](ble-management.md). Outside the setup window this
+service's characteristics are locked there, so a paired Pi that advertises for management never
+exposes these plaintext values.
+
 ## Setup URL (QR on the TV)
 
 `<setup_url>?d=<id>&k=<token>`
@@ -38,6 +43,9 @@ CMS page `/setup`, which explains the hotspot route.
 - Local name `ZZ-<id>`, e.g. `ZZ-1E2F` (short so flags + 128-bit UUID + name fit in 31 bytes)
 - Advertised while the screen shows wifi setup, and for 120 s after it left that state, so a phone
   that is still connected sees the result and the pairing code.
+- After that this service is locked (0x08 on every read and write, no STATUS notifications), and a
+  Pi with a management secret advertises the management service instead
+  ([`ble-management.md`](ble-management.md)). Both services stay registered.
 
 The app matches on the service UUID and `CBAdvertisementDataLocalNameKey == "ZZ-" + d`
 (case-insensitive). Not `peripheral.name`: iOS caches GAP names.

@@ -149,7 +149,7 @@ fun NetworkList(client: SetupClient, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun NetworkRow(network: WifiNetwork, onClick: () -> Unit) {
+internal fun NetworkRow(network: WifiNetwork, current: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth()
             .heightIn(min = 52.dp)
@@ -172,10 +172,13 @@ private fun NetworkRow(network: WifiNetwork, onClick: () -> Unit) {
             Icon(painterResource(R.drawable.ic_lock), null, tint = Palette.muted, modifier = Modifier.size(16.dp))
         }
         Icon(painterResource(signalIcon(network.signal)), null, tint = Palette.soft, modifier = Modifier.size(22.dp))
+        if (current) {
+            Icon(painterResource(R.drawable.ic_check), "huidig netwerk", tint = Palette.accent, modifier = Modifier.size(20.dp))
+        }
     }
 }
 
-private fun signalIcon(signal: Int) = when {
+internal fun signalIcon(signal: Int) = when {
     signal >= 75 -> R.drawable.ic_signal_wifi_4_bar
     signal >= 50 -> R.drawable.ic_network_wifi_3_bar
     signal >= 25 -> R.drawable.ic_network_wifi_2_bar
@@ -184,7 +187,7 @@ private fun signalIcon(signal: Int) = when {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PasswordSheet(network: WifiNetwork?, onDismiss: () -> Unit, connect: (String, String) -> Unit) {
+internal fun PasswordSheet(network: WifiNetwork?, onDismiss: () -> Unit, connect: (String, String) -> Unit) {
     var ssid by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var reveal by rememberSaveable { mutableStateOf(false) }

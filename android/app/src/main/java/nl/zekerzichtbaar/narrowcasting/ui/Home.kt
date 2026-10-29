@@ -27,13 +27,14 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import nl.zekerzichtbaar.narrowcasting.R
-import nl.zekerzichtbaar.narrowcasting.setup.SetupLink
+import nl.zekerzichtbaar.narrowcasting.setup.ScreenLink
 
-private const val NOT_A_SCREEN = "Deze QR-code hoort niet bij een scherm. Scan de QR-code die het scherm bij \"Wifi instellen\" toont."
+private const val NOT_A_SCREEN =
+    "Deze QR-code hoort niet bij een scherm. Scan de QR-code die het scherm bij \"Wifi instellen\" toont, of de QR-sticker op de speler."
 
 /** What the app shows before it has a link. */
 @Composable
-fun HomeScreen(message: String, open: (SetupLink) -> Unit) {
+fun HomeScreen(message: String, open: (ScreenLink) -> Unit) {
     val context = LocalContext.current
     var problem by rememberSaveable { mutableStateOf<String?>(null) }
     var typing by rememberSaveable { mutableStateOf(false) }
@@ -51,7 +52,7 @@ fun HomeScreen(message: String, open: (SetupLink) -> Unit) {
                     scanQr(
                         context,
                         found = { text ->
-                            val link = SetupLink.parse(text)
+                            val link = ScreenLink.parse(text)
                             if (link != null) {
                                 problem = null
                                 open(link)
@@ -96,12 +97,12 @@ private fun scanQr(context: Context, found: (String) -> Unit, unavailable: () ->
 }
 
 @Composable
-private fun LinkDialog(dismiss: () -> Unit, open: (SetupLink) -> Unit) {
+private fun LinkDialog(dismiss: () -> Unit, open: (ScreenLink) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     var wrong by rememberSaveable { mutableStateOf(false) }
 
     fun submit() {
-        val link = SetupLink.parse(text)
+        val link = ScreenLink.parse(text)
         if (link != null) open(link) else wrong = true
     }
 
@@ -111,7 +112,7 @@ private fun LinkDialog(dismiss: () -> Unit, open: (SetupLink) -> Unit) {
         title = { Text("Link van het scherm", color = Palette.text) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Plak de link uit de QR-code op het scherm.", color = Palette.muted)
+                Text("Plak de link uit de QR-code op het scherm of de sticker.", color = Palette.muted)
                 OutlinedTextField(
                     value = text,
                     onValueChange = {

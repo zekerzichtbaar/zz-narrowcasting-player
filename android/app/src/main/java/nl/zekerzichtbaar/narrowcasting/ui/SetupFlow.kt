@@ -65,7 +65,7 @@ import nl.zekerzichtbaar.narrowcasting.setup.SetupClient
 fun SetupFlow(client: SetupClient, rescanQr: () -> Unit, close: () -> Unit) {
     val phase by client.phase.collectAsStateWithLifecycle()
     val scanning by client.isScanning.collectAsStateWithLifecycle()
-    val fix = rememberBluetoothFixes(client)
+    val fix = rememberBluetoothFixes(client, client.link.deviceId, client.usesBluetooth, client::start)
 
     Scaffold(
         containerColor = Palette.background,
@@ -171,13 +171,17 @@ private fun PhaseContent(phase: Phase, client: SetupClient, rescanQr: () -> Unit
 }
 
 @Composable
-private fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProblem) -> Unit) {
+internal fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProblem) -> Unit, managing: Boolean = false) {
     when (problem) {
         BluetoothProblem.OFF -> StepView(
             icon = R.drawable.ic_bluetooth_disabled,
             tint = Palette.error,
             title = "Bluetooth staat uit",
-            message = "Zet Bluetooth aan. Het scherm wordt via Bluetooth ingesteld.",
+            message = if (managing) {
+                "Zet Bluetooth aan. Het scherm wordt via Bluetooth beheerd."
+            } else {
+                "Zet Bluetooth aan. Het scherm wordt via Bluetooth ingesteld."
+            },
             modifier = Modifier.testTag("step.bluetoothOff"),
         ) {
             PrimaryButton("Zet Bluetooth aan", onClick = { fix(problem) })
@@ -208,7 +212,11 @@ private fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProbl
             icon = R.drawable.ic_warning,
             tint = Palette.error,
             title = "Bluetooth niet beschikbaar",
-            message = "Deze telefoon ondersteunt geen Bluetooth LE. Gebruik het instelnetwerk dat het scherm toont.",
+            message = if (managing) {
+                "Deze telefoon ondersteunt geen Bluetooth LE, en dat is nodig om het scherm te beheren."
+            } else {
+                "Deze telefoon ondersteunt geen Bluetooth LE. Gebruik het instelnetwerk dat het scherm toont."
+            },
         )
     }
 }
@@ -218,22 +226,27 @@ private fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProbl
  * screens' buttons do. Every return to the app re-checks, as the user may have changed a setting.
  */
 @Composable
-private fun rememberBluetoothFixes(client: SetupClient): (BluetoothProblem) -> Unit {
+internal fun rememberBluetoothFixes(
+    key: Any,
+    deviceId: String,
+    usesBluetooth: Boolean,
+    recheck: () -> Unit,
+): (BluetoothProblem) -> Unit {
     val activity = LocalActivity.current
-    var asked by rememberSaveable(client.link.deviceId) { mutableStateOf(false) }
+    var asked by rememberSaveable(deviceId) { mutableStateOf(false) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
-        client.start()
+        recheck()
     }
-    val enable = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { client.start() }
+    val enable = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { recheck() }
 
-    LaunchedEffect(client) {
-        if (client.usesBluetooth && !asked && activity != null && !BluetoothAccess.granted(activity)) {
+    LaunchedEffect(key) {
+        if (usesBluetooth && !asked && activity != null && !BluetoothAccess.granted(activity)) {
             permissions.launch(BluetoothAccess.permissions)
         }
     }
-    LifecycleResumeEffect(client) {
-        client.start()
+    LifecycleResumeEffect(key) {
+        recheck()
         onPauseOrDispose {}
     }
 

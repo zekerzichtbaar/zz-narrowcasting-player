@@ -1,0 +1,50 @@
+{
+  "_note": "written by context-diet on 2026-10-28; edit freely, an existing file is never regenerated except by /diet init",
+  "mcp": [
+    "Neon",
+    "afpunter-live",
+    "claude_ai_Higgsfield",
+    "freecad",
+    "higgsfield",
+    "monitorzz",
+    "plugin_firebase_firebase",
+    "plugin_stripe_stripe",
+    "coolify",
+    "claude_ai_Gmail",
+    "claude_ai_Google_Calendar",
+    "claude_ai_Google_Drive"
+  ],
+  "skills": [
+    "apple-design",
+    "landing-page-audit",
+    "payload",
+    "reverse-engineer-anything",
+    "stripe:*",
+    "osmo:osmo",
+    "dezzign:dezzign",
+    "hyperframes:*",
+    "kicad-happy:*",
+    "dataviz",
+    "artifact-design",
+    "artifact-diagramming",
+    "artifact-capabilities",
+    "anthropic-skills:docx",
+    "anthropic-skills:pptx",
+    "anthropic-skills:xlsx",
+    "anthropic-skills:pdf",
+    "anthropic-skills:google-workspace",
+    "anthropic-skills:morning",
+    "anthropic-skills:import-memory",
+    "figma:figma-use-slides",
+    "figma:figma-use-figjam",
+    "figma:figma-generate-diagram",
+    "figma:figma-shaders",
+    "figma:figma-generative-plugins",
+    "figma:figma-implement-motion",
+    "figma:figma-use-motion",
+    "plugin-authoring"
+  ],
+  "agents": [
+    "stripe:Company Researcher"
+  ]
+}

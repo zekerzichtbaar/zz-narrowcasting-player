@@ -125,6 +125,33 @@ def parse_stations(text):
     return sum(1 for l in text.splitlines() if l.startswith("Station "))
 
 
+def parse_active(text):
+    """`nmcli -t -f ACTIVE,SSID,SIGNAL device wifi list` -> (ssid, signal) of the joined network."""
+    for f in (split_t(l) for l in text.splitlines() if l):
+        if len(f) == 3 and f[0] == "yes" and f[1]:
+            try:
+                return f[1], int(f[2])
+            except ValueError:
+                return f[1], None
+    return None, None
+
+
+def parse_ip4(text):
+    """`nmcli -g IP4.ADDRESS device show <iface>` -> the first address without its prefix."""
+    first = text.strip().split("|")[0].split("\n")[0].strip()
+    return first.split("/")[0] or None
+
+
+def connect_outcome(joined, cms, was_online):
+    """Management connect: keep the new network ("online"/"offline") or go back ("fallback").
+    A join without CMS is kept only when the Pi was offline before: it is no worse."""
+    if joined and cms:
+        return "online"
+    if joined and not was_online:
+        return "offline"
+    return "fallback"
+
+
 # --- nmcli ----------------------------------------------------------------------------------
 
 def available():
@@ -240,6 +267,91 @@ def try_known(networks):
     return False
 
 
+def get(field, *what, timeout=10):
+    """One value via `nmcli -g` (unescaped), "" when nmcli fails."""
+    r = nm("-g", field, *what, timeout=timeout)
+    return split_t(r.stdout.strip())[0] if r.returncode == 0 else ""
+
+
+def wifi_signal():
+    """(ssid, signal 0-100) of the wifi the Pi is on, else (None, None). Cached scan, no rescan."""
+    return parse_active(nm("-t", "-f", "ACTIVE,SSID,SIGNAL", "device", "wifi", "list", "--rescan", "no",
+                           timeout=5).stdout)
+
+
+def active_wifi(iface):
+    """Name of the connection active on the wifi device (our hotspot does not count), else None."""
+    return next((c for d, _, s, c in devices() if d == iface and s == "connected" and c and c != HOTSPOT),
+                None)
+
+
+def priority(name):
+    try:
+        return int(get("connection.autoconnect-priority", "connection", "show", name) or 0)
+    except ValueError:
+        return 0
+
+
+def wait_cms(cms_ok, budget=30.0, every=5.0, clock=time.monotonic, sleep=time.sleep):
+    """Does the CMS answer within `budget` s (DHCP/DNS settle after `connection up`)."""
+    end = clock() + budget
+    while True:
+        if cms_ok():
+            return True
+        if clock() + every > end:
+            return False
+        sleep(every)
+
+
+def switch(iface, ssid, password, hidden=False, was_online=False, cms_ok=lambda: True, cms_wait=30.0):
+    """Management `connect` (docs/ble-management.md): join `ssid` also while online, and go back to
+    the network it was on when that fails. The new network gets its own profile next to the old
+    one (same SSID: the old password stays untouched until the new one works); only a kept join
+    replaces same-SSID profiles. Returns the netman side of the final: state ok/failed, msg, ip,
+    online, now (the SSID it is on after a fallback)."""
+    old = active_wifi(iface)
+    old_ssid = old and get("802-11-wireless.ssid", "connection", "show", old)
+    same = [n for n in saved_wifi() if get("802-11-wireless.ssid", "connection", "show", n) == ssid]
+    sec = next((n["security"] for n in scan(rescan=False) if n["ssid"] == ssid), None)
+    name, tmp = PREFIX + ssid, PREFIX + "new-" + ssid
+    nm("connection", "delete", tmp, timeout=15)
+    args = ["connection", "add", "type", "wifi", "ifname", iface, "con-name", tmp, "ssid", ssid,
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-priority", str(max(map(priority, ([old] if old else []) + same), default=-1) + 1)]
+    km = key_mgmt(sec or "", password)
+    if km:
+        args += ["wifi-sec.key-mgmt", km, "wifi-sec.psk", password]
+    if hidden or sec is None:
+        args += ["802-11-wireless.hidden", "yes"]
+    r = nm(*args, timeout=15)
+    if r.returncode == 0:
+        r = nm("--wait", "45", "connection", "up", tmp, timeout=55)
+    ip = parse_ip4(nm("-g", "IP4.ADDRESS", "device", "show", iface, timeout=10).stdout) \
+        if r.returncode == 0 else None
+    cms = bool(ip) and wait_cms(cms_ok, cms_wait)
+    outcome = connect_outcome(bool(ip), cms, was_online)
+    log.info("wifi switch to %r: %s (was on %r, %s)", ssid, outcome, old_ssid,
+             "online" if was_online else "offline")
+    if outcome != "fallback":
+        for n in same + ([name] if name not in same else []):
+            if n != tmp:
+                nm("connection", "delete", n, timeout=15)
+        nm("connection", "modify", tmp, "connection.id", name, timeout=15)
+        msg = None if cms else f"Verbonden met {ssid}, maar de server is niet bereikbaar (geen internet?)"
+        return {"state": "ok", "ssid": ssid, "ip": ip, "online": cms, "msg": msg}
+    if r.returncode:
+        log.warning("wifi switch %r failed: %s", ssid, r.stderr.strip())
+    nm("connection", "delete", tmp, timeout=15)
+    if old:
+        nm("--wait", "30", "connection", "up", old, timeout=40)
+    now = active_wifi(iface)
+    now_ssid = (get("802-11-wireless.ssid", "connection", "show", now) or None) if now else None
+    why = "de server is niet bereikbaar" if ip else (friendly_error(r.stderr) if r.returncode else "geen verbinding")
+    back = f" Terug naar {now_ssid}." if now_ssid else ""
+    return {"state": "failed", "error": "failed", "now": now_ssid,
+            "msg": f"Verbinden met {ssid} mislukt: {why}{back}"}
+
+
 def forget_ours():
     """Delete every NM connection we created (saved wifi + hotspot). Returns their names."""
     if not available():
@@ -341,6 +453,8 @@ class WifiSetup:
         self.no_cms = False
         self.joined = None     # SSID of the last connect() that got online, until WIFI_SETUP again
         self.attempts = 0      # finished connect() jobs, so a front end knows its attempt is done
+        self.mjob = None       # the last manage() job: {id, op, ssid, state busy/ok/failed, ...}
+        self.mjob_id = 0
 
     def start(self):
         threading.Thread(target=self._loop, name="wifi", daemon=True).start()
@@ -370,6 +484,14 @@ class WifiSetup:
     def rescan(self):
         self.touch()
         self.jobs.put(("rescan",))
+
+    def manage(self, op, ssid=None, password="", hidden=False):
+        """scan/connect from the Bluetooth management service, outside WIFI_SETUP (no hotspot to
+        drop). Returns the job id; the outcome lands in self.mjob."""
+        self.mjob_id += 1
+        self.mjob = {"id": self.mjob_id, "op": op, "ssid": ssid, "state": "busy"}
+        self.jobs.put(("manage", self.mjob_id, op, ssid, password, hidden))
+        return self.mjob_id
 
     # worker
     def _retry_due(self, now, last_try):
@@ -443,6 +565,29 @@ class WifiSetup:
         log.warning("wifi: connected, but the CMS is not reachable")
         return False
 
+    def _manage(self, jid, op, ssid, password, hidden):
+        """One management job on this thread. Returns True when a connect left the Pi on a wifi (the
+        new one, or the old one after a fallback), so a WIFI_SETUP that began meanwhile holds off."""
+        res = {"id": jid, "op": op, "ssid": ssid, "state": "failed", "error": "failed", "msg": None}
+        try:
+            self._down()  # only when WIFI_SETUP started after the job was queued
+            self.iface = self.iface or wifi_iface()
+            if not self.iface:
+                res.update(error="no_wifi", msg="Geen wifi-adapter gevonden.")
+            elif op == "scan":
+                res.update(state="ok", error=None, networks=scan())
+            else:
+                was_online = self.monitor.ok if self.monitor else True
+                cms_ok = self.monitor.cms_ok if self.monitor else (lambda: True)
+                res.update(switch(self.iface, ssid, password, hidden, was_online, cms_ok))
+                if self.monitor:
+                    self.monitor.poke()
+        except Exception as e:
+            log.exception("wifi management %s: %s", op, e)
+            res["msg"] = "Er ging iets mis op de speler."
+        self.mjob = res
+        return op == "connect" and bool(res["state"] == "ok" or res.get("now"))
+
     def _boot_file(self):
         """wifi.txt on the boot partition, once at start, before the hotspot can come up (this
         thread does all nmcli work, so `want(True)` waits for it). Saves pi-player-<ssid> (kept when
@@ -507,6 +652,10 @@ class WifiSetup:
                 job = None
             try:
                 now = time.monotonic()
+                if job and job[0] == "manage":
+                    if self._manage(*job[1:]) and self.wanted:
+                        hold = time.monotonic() + self.HOLD_AFTER_CONNECT
+                    continue
                 if not self.wanted:
                     self._down()
                     self.status = self.error = None
@@ -598,7 +747,139 @@ def _selfcheck():
     _selfcheck_clients()
     _selfcheck_wifi_txt()
     _selfcheck_online()
+    _selfcheck_switch()
     print("netman self-check OK")
+
+
+def _selfcheck_switch():
+    """Management connect with a fake nmcli: switch while online, fall back, fix a changed password."""
+    global nm
+    assert parse_active("no:Gast:20\nyes:Kantine:82\n") == ("Kantine", 82)
+    assert parse_active("no:Gast:20\n") == (None, None) and parse_active("") == (None, None)
+    assert parse_ip4("192.168.1.57/24\n") == "192.168.1.57" and parse_ip4("") is None
+    assert parse_ip4("10.0.0.2/8 | 10.0.0.3/8") == "10.0.0.2"
+    assert connect_outcome(True, True, True) == connect_outcome(True, True, False) == "online"
+    assert connect_outcome(True, False, False) == "offline"
+    assert connect_outcome(True, False, True) == "fallback"
+    assert connect_outcome(False, False, True) == connect_outcome(False, False, False) == "fallback"
+    t, probes = [0.0], []
+    assert wait_cms(lambda: probes.append(t[0]) or len(probes) > 3, 30, 5, lambda: t[0],
+                    lambda d: t.__setitem__(0, t[0] + d)) and probes == [0, 5, 10, 15]
+    probes.clear()
+    assert not wait_cms(lambda: probes.append(t[0]) and False, 30, 5, lambda: t[0],
+                        lambda d: t.__setitem__(0, t[0] + d)) and len(probes) == 7
+
+    air = {"Kantine": "geheim123", "Gast": "gast12345", "Kapot": "kapot1234"}
+    cms_on = {"Kantine", "Gast"}
+    world = {}
+    calls = []
+
+    def fake_nm(*args, timeout=30):
+        calls.append(args)
+        profiles, out, rc, err = world["profiles"], "", 0, ""
+        if args[-1] == "device" and "DEVICE,TYPE,STATE,CONNECTION" in args:
+            a = world["active"]
+            out = f"wlan0:wifi:{'connected' if a else 'disconnected'}:{a or ''}\n"
+        elif args[:2] == ("-g", "802-11-wireless.ssid"):
+            p = profiles.get(args[-1])
+            out, rc = (p["ssid"].replace(":", "\\:") + "\n", 0) if p else ("", 10)
+        elif args[:2] == ("-g", "connection.autoconnect-priority"):
+            out = f"{profiles[args[-1]]['prio']}\n"
+        elif args[:2] == ("-g", "IP4.ADDRESS"):
+            out = "192.168.1.57/24\n" if world["active"] else ""
+        elif args[-1] == "show" and "NAME,TYPE" in args:
+            out = "".join(f"{n}:802-11-wireless\n" for n in profiles) + "Wired connection 1:802-3-ethernet\n"
+        elif "list" in args:
+            out = "Kantine:82:WPA2\nGast:40:WPA2\nKapot:30:WPA2\n"
+        elif args[:2] == ("connection", "delete"):
+            rc = 0 if profiles.pop(args[2], None) else 10
+            if world["active"] == args[2]:
+                world["active"] = None
+        elif args[:2] == ("connection", "add"):
+            kv = dict(zip(args[2::2], args[3::2]))
+            profiles[kv["con-name"]] = {"ssid": kv["ssid"], "psk": kv.get("wifi-sec.psk", ""),
+                                        "prio": int(kv["connection.autoconnect-priority"])}
+        elif args[:2] == ("connection", "modify"):
+            profiles[args[-1]] = profiles.pop(args[2])
+            if world["active"] == args[2]:
+                world["active"] = args[-1]
+        elif "up" in args:
+            p = profiles[args[-1]]
+            if air.get(p["ssid"]) == p["psk"]:
+                world["active"] = args[-1]
+            else:
+                world["active"] = None
+                rc, err = 4, "Error: Connection activation failed: Secrets were required, but not provided."
+        return subprocess.CompletedProcess(args, rc, out, err)
+
+    def cms_ok():
+        a = world["active"]
+        return bool(a) and world["profiles"][a]["ssid"] in cms_on
+
+    def run(ssid, pw, was_online, profiles, active):
+        world.update(profiles={n: dict(p) for n, p in profiles.items()}, active=active)
+        calls.clear()
+        return switch("wlan0", ssid, pw, False, was_online, cms_ok, cms_wait=0)
+
+    def deleted(name):
+        return ("connection", "delete", name) in calls
+
+    kantine = {"pi-player-Kantine": {"ssid": "Kantine", "psk": "geheim123", "prio": 3}}
+    real_nm, nm = nm, fake_nm
+    try:
+        # online on Kantine -> Gast with the right password: kept, above the old one, which stays saved
+        r = run("Gast", "gast12345", True, kantine, "pi-player-Kantine")
+        assert r == {"state": "ok", "ssid": "Gast", "ip": "192.168.1.57", "online": True, "msg": None}, r
+        assert world["active"] == "pi-player-Gast" and world["profiles"]["pi-player-Gast"]["prio"] == 4
+        assert world["profiles"]["pi-player-Kantine"] == kantine["pi-player-Kantine"]
+        assert not deleted("pi-player-Kantine")
+        # wrong password: the new profile goes, back on Kantine
+        r = run("Gast", "fout12345", True, kantine, "pi-player-Kantine")
+        assert r == {"state": "failed", "error": "failed", "now": "Kantine",
+                     "msg": "Verbinden met Gast mislukt: Verkeerd wachtwoord? Terug naar Kantine."}, r
+        assert world["active"] == "pi-player-Kantine" and set(world["profiles"]) == {"pi-player-Kantine"}
+        assert ("--wait", "30", "connection", "up", "pi-player-Kantine") in calls
+        # joins, but no CMS behind it while Kantine was online: back to Kantine
+        r = run("Kapot", "kapot1234", True, kantine, "pi-player-Kantine")
+        assert r["state"] == "failed" and r["now"] == "Kantine" and "server" in r["msg"], r
+        assert world["active"] == "pi-player-Kantine" and set(world["profiles"]) == {"pi-player-Kantine"}
+        # offline because the Kantine password changed (Pi Imager's profile): a wrong guess changes
+        # nothing, the right one replaces the old profile
+        air["Kantine"] = "nieuw12345"
+        pre = {"preconfigured": {"ssid": "Kantine", "psk": "geheim123", "prio": 0}}
+        r = run("Kantine", "fout12345", False, pre, None)
+        assert r["state"] == "failed" and r["now"] is None and r["msg"].endswith("Verkeerd wachtwoord?"), r
+        assert world["profiles"] == pre and not deleted("preconfigured")
+        r = run("Kantine", "nieuw12345", False, pre, None)
+        assert r["state"] == "ok" and r["online"], r
+        assert world["profiles"] == {"pi-player-Kantine": {"ssid": "Kantine", "psk": "nieuw12345", "prio": 1}}
+        assert world["active"] == "pi-player-Kantine"
+        # same SSID while online on it (password about to change): the old one is only touched after
+        air["Kantine"] = "geheim123"
+        r = run("Kantine", "fout12345", True, kantine, "pi-player-Kantine")
+        assert r["now"] == "Kantine" and world["profiles"] == kantine and not deleted("pi-player-Kantine")
+        # offline, a network without CMS: kept (no worse), not online
+        r = run("Kapot", "kapot1234", False, kantine, None)
+        assert r["state"] == "ok" and r["online"] is False and r["msg"].startswith("Verbonden met Kapot"), r
+        assert world["active"] == "pi-player-Kapot" and "pi-player-Kantine" in world["profiles"]
+    finally:
+        nm = real_nm
+        air["Kantine"] = "geheim123"
+
+    # a connect that ends on a wifi (also back on the old one) holds off a hotspot wanted meanwhile
+    global switch
+    real_switch = switch
+    w = WifiSetup("pi-00000000abcd1e2f")
+    w.iface = "wlan0"
+    try:
+        for res, held in (({"state": "ok"}, True), ({"state": "failed", "now": "Kantine"}, True),
+                          ({"state": "failed", "now": None}, False)):
+            switch = lambda *a, **k: dict(res)
+            assert w._manage(1, "connect", "Gast", "geheim123", False) is held, res
+            assert w.mjob["id"] == 1 and w.mjob["state"] == res["state"]
+        assert w._manage(2, "scan", None, "", False) is False
+    finally:
+        switch = real_switch
 
 
 def _selfcheck_clients():

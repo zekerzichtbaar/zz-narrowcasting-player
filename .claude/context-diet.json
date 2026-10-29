@@ -1,0 +1,27 @@
+{
+  "_note": "written by context-diet on 2026-10-23; edit freely, an existing file is never regenerated except by /diet init",
+  "mcp": [
+    "Neon",
+    "afpunter-live",
+    "claude_ai_Higgsfield",
+    "higgsfield",
+    "plugin_firebase_firebase",
+    "plugin_stripe_stripe",
+    "monitorzz",
+    "freecad",
+    "coolify"
+  ],
+  "skills": [
+    "stripe:*",
+    "kicad-happy:*",
+    "hyperframes:*",
+    "dezzign:dezzign",
+    "osmo:osmo",
+    "landing-page-audit",
+    "payload",
+    "reverse-engineer-anything"
+  ],
+  "agents": [
+    "stripe:Company Researcher"
+  ]
+}

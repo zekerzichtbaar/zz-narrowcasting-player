@@ -7,6 +7,7 @@ switch at the same moment. First-time setup (wifi and pairing) is done on the sc
 
 - Protocol between Pi and CMS: [`docs/protocol.md`](docs/protocol.md)
 - Wifi setup over Bluetooth (App Clip, Android app): [`docs/ble-setup.md`](docs/ble-setup.md), iOS app in [`ios/`](ios/), Android app in [`android/`](android/)
+- Managing a paired screen over Bluetooth (QR sticker): [`docs/ble-management.md`](docs/ble-management.md)
 - Mock CMS for local testing: `mock_cms.py`
 - Sync test video: `scripts/make_test_video.sh`
 
@@ -363,7 +364,7 @@ writable, so content/pairing are off): `python3 -m pi_player --video media/test.
 Self-checks (pure logic, no hardware needed):
 
 ```sh
-for m in sync content heartbeat state pairing netman portal bell gst; do python3 -m pi_player.$m || echo "FAIL $m"; done
+for m in sync content heartbeat state pairing netman portal bell gst blesetup; do python3 -m pi_player.$m || echo "FAIL $m"; done
 python3 -m pi_player.screens check            # setup screens turned for a rotated panel
 python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNGs to look at
 python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
@@ -413,8 +414,8 @@ In `journalctl -u pi-player -f`, look for `hotspot ... up`, `portal on` and `wif
 clip from `ios/` and add a Local Experience for `https://app.zekerzichtbaar.tv/setup`, see
 [`ios/README.md`](ios/README.md)):
 
-1. Same start as above. The journal shows `bluetooth: wifi setup service registered` and
-   `bluetooth: advertising as ZZ-XXXX`; the screen's QR is the App Clip link.
+1. Same start as above. The journal shows `bluetooth: wifi setup + management services registered`
+   and `bluetooth: advertising as ZZ-XXXX (setup)`; the screen's QR is the App Clip link.
 2. Scan the QR with the iPhone camera. The clip finds the screen and lists the networks.
 3. Wrong password first: the clip shows *Verkeerd wachtwoord?* within about a minute.
 4. Correct password: the clip shows *Het scherm is online* with the same pairing code as the

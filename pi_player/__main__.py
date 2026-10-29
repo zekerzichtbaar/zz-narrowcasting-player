@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, bell, blesetup, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
+from . import __version__, bell, blemanage, blesetup, config, content as content_mod, heartbeat, netman, pairing, screens, state, updater
 from .gst import Display, DisplayError, quiet_console, to_rotation
 
 log = logging.getLogger("pi-player")
@@ -282,8 +282,11 @@ def run(cfg):
             if netman.available():
                 wifi = netman.WifiSetup(pair.device_id, cfg["wifi_retry"], monitor).start()
                 if cfg["setup_url"] and blesetup.available():
+                    manage = blemanage.Manager(
+                        content.management_secret, wifi,
+                        status=lambda: blemanage.status_fields(pair.device_id, content, monitor))
                     ble = blesetup.BleSetup(wifi, pair.device_id, cfg["setup_url"], pairing=lambda: pair.info,
-                                            paired=lambda: bool(content.token())).start()
+                                            paired=lambda: bool(content.token()), manage=manage).start()
             else:
                 log.warning("nmcli not found: no wifi setup hotspot (dev machine?)")
         Agent(cfg, display, content, pair, monitor, wifi, ble, upd).loop()

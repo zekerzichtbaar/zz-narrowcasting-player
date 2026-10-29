@@ -7,7 +7,8 @@ Device endpoints:
   POST /api/devices/register     -> pairing code + poll_secret (invalidates the device's previous code)
   GET  /api/devices/register/status?device_id=&code=   bearer poll_secret; pending / expired /
                                  claimed (+token, once); a wrong or missing secret = expired
-  GET  /api/devices/manifest     bearer token; 200 manifest / 204 nothing published / 401
+  GET  /api/devices/manifest     bearer token; 200 manifest (with the token's management_secret, also as a
+                                 version-null body) / 204 nothing published and no secret served / 401
   POST /api/devices/heartbeat    bearer token; logs it, 204 / 401
   GET  /api/devices/bell         bearer token; where the bel is (this server) / 204 when disabled / 401
   POST /api/broadcasting/auth    bearer token; {auth} for pusher:subscribe on the token's channel / 403
@@ -27,6 +28,8 @@ Admin (curl):
                                  (retries a failed update of the same version); rings `poll`
   POST /admin/wifi-setup[?stop=1]   "Wifi opnieuw instellen": wifi_setup = now in every manifest for 5 min
                                  (stop=1: "Wifi-scherm stoppen", wifi_setup = 0); rings `poll`
+  POST /admin/management-qr[?device_id=pi-...][&enabled=0|1]   "Nieuwe QR": a new management_secret for every
+                                 token (or that device's); enabled=0 serves none (an older CMS), 1 again; rings `poll`
   POST /admin/unpair[?device_id=pi-...]   revoke tokens (all, or that device's): next call gets 401
   POST /admin/pair[?token=T]     re-enable the hand-provisioned --token (or add token T)
   POST /admin/poll               ring `poll` on the bel
@@ -52,8 +55,8 @@ import urllib.parse
 
 from pi_player.bell import accept_key, encode_frame, read_frame
 
-STATE = {"manifest": None, "identify_until": 0, "rotation": 0, "update": None, "wifi_setup": -1}
-TOKENS = {}  # device token -> {"device_id", "screen"}; the --token one is added in main()
+STATE = {"manifest": None, "identify_until": 0, "rotation": 0, "update": None, "wifi_setup": -1, "management": True}
+TOKENS = {}  # device token -> {"device_id", "screen", "secret"}; the --token one is added in main()
 CODES = {}   # pairing code -> {"device_id", "expires_at", "token"|None}
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 LOCK = threading.Lock()
@@ -91,6 +94,11 @@ def token_ok(headers):
 def new_code():
     c = "".join(secrets.choice(ALPHABET) for _ in range(6))
     return c[:3] + "-" + c[3:]
+
+
+def new_secret():
+    """A management (QR sticker) secret like the CMS makes: 32 random bytes, base64url, 43 characters."""
+    return secrets.token_urlsafe(32)
 
 
 def channel_of(token):
@@ -262,7 +270,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 screen = {"id": "scr_" + secrets.token_hex(3), "name": f.get("name") or "Screen",
                           "group_id": f.get("group_id") or "grp_1"}
                 c["token"] = token
-                TOKENS[token] = {"device_id": c["device_id"], "screen": screen}
+                TOKENS[token] = {"device_id": c["device_id"], "screen": screen, "secret": new_secret()}
         if bad:
             return self.pair_page(code, f"Code {html.escape(code)} is unknown, expired or already used.")
         log(f"claimed {code} for {c['device_id']} as {screen}")
@@ -322,15 +330,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not token_ok(self.headers):
                 return self._json(401, {"error": "unauthorized"})
             m = STATE["manifest"]
-            screen = TOKENS.get(bearer(self.headers), {}).get("screen")
+            dev = TOKENS.get(bearer(self.headers), {})
+            screen = dev.get("screen")
             until = STATE["identify_until"] if STATE["identify_until"] > time.time() else 0
             wifi = STATE["wifi_setup"] if STATE["wifi_setup"] == 0 or STATE["wifi_setup"] > time.time() - 300 else None
+            extra = {"management_secret": dev["secret"]} if STATE["management"] else {}
             if m:
                 return self._json(200, {**m, "identify_until": until, "rotation": STATE["rotation"],
-                                        "update": STATE["update"], "wifi_setup": wifi, "screen": screen or m["screen"]})
-            if until or STATE["update"] or wifi is not None:
+                                        "update": STATE["update"], "wifi_setup": wifi, **extra,
+                                        "screen": screen or m["screen"]})
+            if until or STATE["update"] or wifi is not None or extra:
                 return self._json(200, {"version": None, "identify_until": until, "rotation": STATE["rotation"],
-                                        "update": STATE["update"], "wifi_setup": wifi,
+                                        "update": STATE["update"], "wifi_setup": wifi, **extra,
                                         "screen": screen or {"id": "scr_1", "name": "Mock screen", "group_id": "grp_1"}})
             return self._json(204)
         if url.path.startswith("/media/"):
@@ -414,6 +425,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("group moment", json.dumps(STATE["manifest"]))
             ring("poll")
             return self._json(200, STATE["manifest"])
+        if url.path == "/admin/management-qr":
+            if "enabled" in q:
+                STATE["management"] = q["enabled"] == "1"
+            dev = q.get("device_id")
+            with LOCK:
+                rotated = [t for t, v in TOKENS.items() if dev is None or v["device_id"] == dev]
+                for t in rotated:
+                    TOKENS[t]["secret"] = new_secret()
+            log(f"management QR: new secret for {len(rotated)} token(s), served: {STATE['management']}")
+            ring("poll")
+            return self._json(200, {"rotated": len(rotated), "enabled": STATE["management"]})
         if url.path == "/admin/unpair":
             dev = q.get("device_id")
             with LOCK:
@@ -425,7 +447,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "revoked": len(gone)})
         if url.path == "/admin/pair":
             token = q.get("token") or ARGS.token
-            TOKENS[token] = {"device_id": None, "screen": None}
+            TOKENS[token] = {"device_id": None, "screen": None, "secret": new_secret()}
             return self._json(200, {"ok": True, "token": token})
         if url.path != "/admin/publish" or "file" not in q:
             return self._json(404, {"error": "POST /admin/publish?file=NAME&delay=SECONDS"})
@@ -470,7 +492,7 @@ def parse_args(argv=None):
 def make_server(args):
     global ARGS
     ARGS = args
-    TOKENS[ARGS.token] = {"device_id": None, "screen": None}
+    TOKENS[ARGS.token] = {"device_id": None, "screen": None, "secret": new_secret()}
     ARGS.media = os.path.abspath(ARGS.media)
     srv = http.server.ThreadingHTTPServer((ARGS.bind, ARGS.port), Handler)
     ARGS.port = srv.server_port

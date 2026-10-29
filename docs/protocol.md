@@ -12,6 +12,10 @@ Times are Unix seconds (float allowed). Authenticated calls send `Authorization:
   `pi-<16 hex>`. Survives reinstalls. Not a secret.
 - **device_token**: opaque secret issued by the CMS when an admin claims the device. Stored at
   `/var/lib/pi-player/token` (0600, root). Never shown on screen, never logged.
+- **management_secret**: the secret of the management QR sticker on the Pi
+  ([`ble-management.md`](ble-management.md)), made by the CMS per screen and handed out in every
+  manifest (3.1). Stored at `/var/lib/pi-player/management_secret` (0600, root) so the sticker also
+  works offline. Never shown on screen, never logged.
 - **poll_secret**: random secret the CMS hands out with each pairing code (2.1). Only kept in
   memory; it proves to the status poll (2.2) that the caller is the Pi that registered the code
   (the code and the device_id are visible or guessable, the secret is not). The CMS stores only its
@@ -97,7 +101,8 @@ Responses `200`:
 
 The admin removes/unpairs the screen in the CMS. The CMS revokes the token: every authenticated
 call (manifest, heartbeat) then returns `401`. The Pi deletes its token and goes back to
-`PAIRING` at the next manifest poll or heartbeat, so within about 30 s.
+`PAIRING` at the next manifest poll or heartbeat, so within about 30 s. The management secret goes
+with the token: a screen that is paired again gets a new secret, and a new sticker.
 
 ## 3. Manifest
 
@@ -122,6 +127,7 @@ Response `200`:
   "rotation": 0,
   "update": null,
   "wifi_setup": null,
+  "management_secret": "3vQf0c2YbqkW1pZ8m7RtXo4LhUeN9sDaJiGyKzCw5Bg",
   "screen": { "id": "scr_42", "name": "Kantine links", "group_id": "grp_7" }
 }
 ```
@@ -130,8 +136,9 @@ Response `200` with `"version": null` (or `204` from an older CMS): paired but n
 no playlist, nothing published, or no version of the playlist ever got a video. Pi shows `WAITING`;
 a video it had (e.g. from before an unpair/re-pair, or after the CMS unpublished) is deleted. The
 body still carries `rotation` (an idle portrait screen turns its own screens), `identify_until`
-(show the name while the screen is identified, `0` = not), `update`, `wifi_setup` and `screen`:
-`{"version": null, "identify_until": 0, "rotation": 90, "update": null, "wifi_setup": null, "screen": {...}}`.
+(show the name while the screen is identified, `0` = not), `update`, `wifi_setup`,
+`management_secret` and `screen`:
+`{"version": null, "identify_until": 0, "rotation": 90, "update": null, "wifi_setup": null, "management_secret": "3vQf...", "screen": {...}}`.
 A newly published version whose video is still being made (or failed) is **not** this: the CMS
 keeps serving the previous video, with the same `version` as before, so the Pi does not even
 switch. Once the new video is ready, `version` changes.
@@ -152,6 +159,7 @@ Fields:
 | `rotation` | int | How the panel physically hangs: `0`, `90` or `270` degrees turned **clockwise** (CMS "Stand van het scherm"). The Pi only turns its own setup/waiting/wifi/identify screens with it (picture turned back the other way: 90 -> 90 degrees counter-clockwise) and keeps the value in `state.json` for restarts without network. The Pi **never turns the video** (too heavy on a Pi 4): for a portrait playlist on a panel at 90/270 the CMS serves a variant of the render with the picture already turned that way (`url`, `sha256`, `size` and `version` are the variant's), a plain 1920x1080 file that plays zero-copy like a landscape one. A rotation change therefore reaches the video as a new `version` (a different file); the field itself is **not** part of `version`. Also in the `version: null` body. Missing (older CMS) = keep the last one. |
 | `update` | object \| null | "Speler bijwerken" in the CMS (Zeker Zichtbaar only): `{"version": "v1.3.0", "url": "https://github.com/zekerzichtbaar/zz-narrowcasting-player/archive/refs/tags/v1.3.0.tar.gz", "attempt": 1760437213}`, the release this player should install, or `null`. `attempt` (optional) is unique per request in the CMS (a new one on every "Speler bijwerken" / "Opnieuw proberen", e.g. the request time in Unix seconds): a positive int or a short token (`[A-Za-z0-9][A-Za-z0-9._+-]{0,63}`); the Pi compares it as a string for equality only and ignores an invalid one (as if missing). A failed update is retried only when `attempt` changes (section 7). Missing `attempt` (older CMS) = a failed version is never tried again. Also in the `version: null` body. **Not** part of `version`: an update never changes the content or the group clock. The CMS keeps serving it until a heartbeat reports `agent_version` equal to `update.version`, then it is `null` again (also when `agent_version` already equals it). `url` is GitHub's tarball of the tag (https, no own signing); the tarball has no git, so the updater passes `PI_PLAYER_VERSION=<update.version>` to `install.sh`. A player without the updater ignores the field (unknown fields are ignored) and keeps playing. Missing (older CMS) = no update. What the Pi does with it: section 7. |
 | `wifi_setup` | int \| null | "Wifi opnieuw instellen" in the CMS (Zeker Zichtbaar only): the request time (Unix s, new per click), served for 5 minutes, else `null`. A new value opens the wifi-setup screen with its countdown (`offline_timeout`), also while the wifi works; it ends early only once a network was set up from the phone, otherwise the Pi plays on over its old wifi after the countdown. Also in the `version: null` body. **Not** part of `version`. The Pi remembers the last value it acted on in memory (an agent restart within the 5 minutes opens the setup once more). `0` = "Wifi-scherm stoppen": closes a setup the CMS opened (never the one after a start); behind its own hotspot the Pi only hears it when it briefly retries its saved wifi (every `wifi_retry`, then it fetches the manifest right away). Missing (older CMS), negative or not an int = not asked. |
+| `management_secret` | string \| null | The secret of the management QR sticker (`https://app.zekerzichtbaar.tv/setup?d=<id4>&s=<secret>`, [`ble-management.md`](ble-management.md)): 32 random bytes from the CMS, base64url without padding (43 characters; the Pi accepts 22 to 128 characters of `[A-Za-z0-9_-]`). Per screen, kept by the CMS so the QR can be shown again, new when the screen is claimed or paired again and on "Nieuwe QR". Also in the `version: null` body. **Not** part of `version`. The Pi stores a valid value in `management_secret` in its state dir (mode 0600, atomic write) and replaces it when it changes: from then on only the new sticker opens management, and open Bluetooth sessions end. So a rotation reaches the Pi within one poll (a second with the bel), an offline Pi keeps accepting the old sticker until its next manifest. `null` = the CMS withdrew it: the Pi deletes it. Missing (older CMS), a `204` or an invalid value = keep what is stored. A `401` deletes it together with the token. Never logged. |
 | `screen` | object | Name/group for display on the `WAITING` screen and for identifying. |
 
 Sync math on the Pi: `position = now mod duration` (epoch 0; the manifest's `epoch` is ignored, a CMS once
@@ -225,7 +233,8 @@ next heartbeat simply follows 30 s later.
 
 The CMS uses it as "online" (last seen) and as the stored version for group activation:
 `pending_version` if set, else `version`. It also stores `agent_version`, `ip` and `network` to show
-in the beheer (an invalid value is ignored, never an error), and clears an asked update (manifest
+in the beheer (an invalid value is ignored, never an error), keeps `device_id` for the `d` of the management
+sticker ([`ble-management.md`](ble-management.md); also for screens whose pairing code is long gone), and clears an asked update (manifest
 `update`) once `agent_version` equals its `version`; `drift_ms` and `uptime` are diagnostics
 the CMS may ignore. Unknown fields are ignored. An older player sends no `update` field: the CMS then
 knows nothing about the outcome (no error) and only sees `agent_version`.
@@ -238,7 +247,7 @@ the source, else the exact `v*` tag of a git checkout, else `dev-<git describe>`
 
 | situation | Pi behaviour |
 |---|---|
-| HTTP `401` (manifest or heartbeat) | delete token -> `PAIRING` |
+| HTTP `401` (manifest or heartbeat) | delete token and management secret -> `PAIRING` |
 | manifest `204` | `WAITING` |
 | network errors | keep current state/video; retry with backoff; with token + content never `WIFI_SETUP`, except for `offline_timeout` after a start without any NetworkManager connection (countdown, then playing) |
 | "offline" | NetworkManager not connected (hotspot excluded), or `GET <CMS>/up` gets no HTTP answer (DNS/connect/TLS/timeout; any status code counts as reachable) twice in a row. Probed every 30 s while it answers. A wifi without internet is offline. |

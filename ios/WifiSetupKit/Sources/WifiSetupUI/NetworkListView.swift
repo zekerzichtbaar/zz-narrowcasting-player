@@ -76,7 +76,7 @@ struct NetworkListView: View {
     }
 }
 
-private struct NetworkRow: View {
+struct NetworkRow: View {
     let network: WifiNetwork
 
     var body: some View {

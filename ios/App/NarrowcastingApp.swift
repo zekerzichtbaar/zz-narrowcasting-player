@@ -6,29 +6,29 @@ import WifiSetupUI
 
 @main
 struct NarrowcastingApp: App {
-    @State private var link: SetupLink? = SetupLaunch.isMock ? SetupLink(url: SetupLaunch.mockURL) : nil
+    @State private var link: ScreenLink? = SetupLaunch.initialLink
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if let link {
-                    SetupScreen(link: link, rescanQR: { self.link = nil }, close: { self.link = nil })
+                    ScreenLinkView(link: link, rescanQR: { self.link = nil }, close: { self.link = nil })
                 } else {
                     HomeView { self.link = $0 }
                 }
             }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                if let url = activity.webpageURL, let new = SetupLink(url: url) { link = new }
+                if let url = activity.webpageURL, let new = ScreenLink(url: url) { link = new }
             }
             .onOpenURL { url in
-                if let new = SetupLink(url: url) { link = new }
+                if let new = ScreenLink(url: url) { link = new }
             }
         }
     }
 }
 
 private struct HomeView: View {
-    let found: (SetupLink) -> Void
+    let found: (ScreenLink) -> Void
     @State private var scanning = false
     @State private var typing = false
     @State private var typed = ""
@@ -55,7 +55,7 @@ private struct HomeView: View {
     }
 
     var body: some View {
-        ScanPromptView(message: "Scan de QR-code die het scherm bij \"Wifi instellen\" toont. Daarna stel je de wifi van het scherm in via Bluetooth.") {
+        ScanPromptView(message: "Scan de QR-code die het scherm bij \"Wifi instellen\" toont, of de QR-sticker op de speler. Daarna stel je de wifi van het scherm in via Bluetooth.") {
             VStack(spacing: 12) {
                 if canScan {
                     Button("Scan de QR-code") { Task { await openScanner() } }
@@ -80,11 +80,11 @@ private struct HomeView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             Button("Openen") {
-                if let link = SetupLink(string: typed) { found(link) }
+                if let link = ScreenLink(string: typed) { found(link) }
             }
             Button("Annuleer", role: .cancel) {}
         } message: {
-            Text("Plak de link uit de QR-code op het scherm.")
+            Text("Plak de link uit de QR-code op het scherm of de sticker.")
         }
         .alert("Geen toegang tot de camera", isPresented: $cameraDenied) {
             Button("Instellingen") {
@@ -98,7 +98,7 @@ private struct HomeView: View {
 }
 
 private struct QRScannerView: UIViewControllerRepresentable {
-    let found: (SetupLink) -> Void
+    let found: (ScreenLink) -> Void
     let cancel: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -128,17 +128,17 @@ private struct QRScannerView: UIViewControllerRepresentable {
     }
 
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let found: (SetupLink) -> Void
+        let found: (ScreenLink) -> Void
         private var done = false
 
-        init(found: @escaping (SetupLink) -> Void) {
+        init(found: @escaping (ScreenLink) -> Void) {
             self.found = found
         }
 
         func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem],
                          allItems: [RecognizedItem]) {
             for case let .barcode(code) in addedItems {
-                guard !done, let text = code.payloadStringValue, let link = SetupLink(string: text) else { continue }
+                guard !done, let text = code.payloadStringValue, let link = ScreenLink(string: text) else { continue }
                 done = true
                 dataScanner.stopScanning()
                 found(link)

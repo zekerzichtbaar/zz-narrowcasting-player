@@ -16,8 +16,8 @@ settings:
     SWIFT_VERSION: "5.0"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     TARGETED_DEVICE_FAMILY: "1"
-    MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.1"
+    CURRENT_PROJECT_VERSION: "4"
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
@@ -131,6 +131,7 @@ schemes:
       config: Debug
       commandLineArguments:
         "-mockSetup": false
+        "-mockManage": false
   NarrowcastingClip:
     build:
       targets:
@@ -143,5 +144,6 @@ schemes:
       config: Debug
       commandLineArguments:
         "-mockSetup": false
+        "-mockManage": false
       environmentVariables:
         _XCAppClipURL: https://app.zekerzichtbaar.tv/setup?d=1E2F&k=AAECAwQFBgcICQoLDA0ODw

@@ -50,22 +50,34 @@ class SetupLink private constructor(val deviceId: String, val token: ByteArray, 
     companion object {
         fun parse(text: String): SetupLink? {
             val url = text.trim()
-            val query = runCatching { URI(url).rawQuery }.getOrNull() ?: return null
-            val items = query.split('&').mapNotNull { part ->
-                val name = part.substringBefore('=')
-                val value = if ('=' in part) part.substringAfter('=') else return@mapNotNull null
-                runCatching { decode(name) to decode(value) }.getOrNull()
-            }
-            val d = items.firstOrNull { it.first == "d" }?.second?.uppercase() ?: return null
-            if (d.length != 4 || !d.all { it in 'A'..'Z' || it in '0'..'9' }) return null
-            val k = items.firstOrNull { it.first == "k" }?.second ?: return null
+            val items = queryItems(url) ?: return null
+            val d = deviceId(items) ?: return null
+            val k = items.value("k") ?: return null
             val token = base64UrlDecode(k)?.takeIf { it.size == 16 } ?: return null
             return SetupLink(d, token, url)
         }
-
-        private fun decode(s: String): String = URLDecoder.decode(s.replace("+", "%2B"), "UTF-8")
     }
 }
+
+/** `name` to `value` per query item; an item without `=` has a null value. */
+internal fun queryItems(url: String): List<Pair<String, String?>>? {
+    val query = runCatching { URI(url).rawQuery }.getOrNull() ?: return null
+    return query.split('&').mapNotNull { part ->
+        runCatching {
+            decodeQuery(part.substringBefore('=')) to (if ('=' in part) decodeQuery(part.substringAfter('=')) else null)
+        }.getOrNull()
+    }
+}
+
+internal fun List<Pair<String, String?>>.value(name: String): String? =
+    firstOrNull { it.first == name && it.second != null }?.second
+
+internal fun deviceId(items: List<Pair<String, String?>>): String? {
+    val d = items.value("d")?.uppercase() ?: return null
+    return d.takeIf { it.length == 4 && it.all { c -> c in 'A'..'Z' || c in '0'..'9' } }
+}
+
+private fun decodeQuery(s: String): String = URLDecoder.decode(s.replace("+", "%2B"), "UTF-8")
 
 sealed interface Command {
     data class Connect(val ssid: String, val password: String, val hidden: Boolean) : Command
@@ -190,7 +202,11 @@ data class WifiNetwork(val ssid: String, val signal: Int, val secured: Boolean) 
         fun decodeList(data: ByteArray): List<WifiNetwork>? {
             val rows = runCatching { SetupProtocol.json.parseToJsonElement(data.decodeToString()) as? JsonArray }
                 .getOrNull() ?: return null
-            return rows.mapNotNull { row ->
+            return fromRows(rows)
+        }
+
+        internal fun fromRows(rows: JsonArray): List<WifiNetwork> =
+            rows.mapNotNull { row ->
                 val cells = row as? JsonArray ?: return@mapNotNull null
                 if (cells.size < 3) return@mapNotNull null
                 val ssid = (cells[0] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return@mapNotNull null
@@ -198,7 +214,6 @@ data class WifiNetwork(val ssid: String, val signal: Int, val secured: Boolean) 
                 val secured = (cells[2] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: return@mapNotNull null
                 WifiNetwork(ssid, signal, secured != 0)
             }
-        }
     }
 }
 

@@ -2,7 +2,8 @@
 
 Files in state_dir: current.mp4 (on screen), next.mp4 (verified, waiting), next.mp4.part (downloading),
 state.json ({"current": manifest|null, "pending": manifest|null, "screen": {id,name,group_id}|null,
-"rotation": 0|90|270 once a manifest carried one}).
+"rotation": 0|90|270 once a manifest carried one}), management_secret (0600, the QR sticker's secret
+from the manifest, kept for offline use; docs/ble-management.md).
 Self-check: python3 -m pi_player.content
 """
 import hashlib
@@ -10,6 +11,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import threading
 import time
@@ -18,12 +20,17 @@ import urllib.parse
 import urllib.request
 
 from .gst import to_rotation
+from .pairing import write_private
 
 log = logging.getLogger("pi-player")
 
 
 class Unauthorized(Exception):
     """CMS answered 401: token revoked."""
+
+
+MANAGEMENT_FILE = "management_secret"
+MANAGEMENT_SECRET = re.compile(r"[A-Za-z0-9_-]{22,128}")
 
 
 # ---------- pure helpers ----------
@@ -143,7 +150,8 @@ def copy_file(src, dest):
 def reset(state_dir):
     """`pi-player reset`: forget pairing and content -> first-boot flow. Returns removed paths."""
     gone = []
-    for name in ("token", "token.tmp", "state.json", "current.mp4", "next.mp4", "next.mp4.part"):
+    for name in ("token", "token.tmp", MANAGEMENT_FILE, MANAGEMENT_FILE + ".tmp", "state.json", "current.mp4",
+                 "next.mp4", "next.mp4.part"):
         p = os.path.join(state_dir, name)
         try:
             os.unlink(p)
@@ -201,11 +209,36 @@ class Content:
             return None
 
     def forget_token(self):
-        """Unpaired/revoked: delete the token so fetching and the heartbeat stop."""
+        """Unpaired/revoked: delete the token so fetching and the heartbeat stop, and the sticker
+        secret (a screen paired again gets a new one)."""
+        for name in ("token", MANAGEMENT_FILE):
+            try:
+                os.unlink(os.path.join(self.dir, name))
+            except FileNotFoundError:
+                pass
+
+    def management_secret(self):
         try:
-            os.unlink(os.path.join(self.dir, "token"))
-        except FileNotFoundError:
-            pass
+            with open(os.path.join(self.dir, MANAGEMENT_FILE)) as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
+    def set_management_secret(self, value):
+        """The manifest's management_secret: a valid one is stored (replaced on rotation), null
+        deletes it, anything else keeps what is stored. Never logged."""
+        path = os.path.join(self.dir, MANAGEMENT_FILE)
+        if value is None:
+            if os.path.exists(path):
+                log.info("management secret withdrawn by the CMS")
+                os.unlink(path)
+            return
+        if not isinstance(value, str) or not MANAGEMENT_SECRET.fullmatch(value):
+            log.warning("manifest: invalid management_secret ignored")
+            return
+        if value != self.management_secret():
+            log.info("management secret %s", "replaced" if os.path.exists(path) else "stored")
+            write_private(path, value)
 
     def set_screen(self, screen):
         """Screen name/group from the pairing claim or a manifest."""
@@ -307,6 +340,8 @@ class Content:
             self.wifi_setup = w if isinstance(w, int) and not isinstance(w, bool) and w >= 0 else None
         if m and m.get("screen"):
             self.set_screen(m["screen"])
+        if m and "management_secret" in m:  # outside version; missing (older CMS) or 204 = keep
+            self.set_management_secret(m["management_secret"])
         if m and "rotation" in m:  # outside version too: turning needs no download, also when version null
             self.set_rotation(m["rotation"])
         if m is None or m.get("version") is None:
@@ -356,15 +391,18 @@ class Content:
         """Fetch the manifest now (e.g. right after pairing)."""
         self.wake.set()
 
+    def poll(self):
+        try:
+            self.check()
+        except Unauthorized:
+            log.warning("manifest: 401, token revoked; deleting token")
+            self.forget_token()
+        except Exception as e:
+            log.warning("manifest fetch failed: %s", e)
+
     def _loop(self):
         while True:
-            try:
-                self.check()
-            except Unauthorized:
-                log.warning("manifest: 401, token revoked; deleting token")
-                self.forget_token()
-            except Exception as e:
-                log.warning("manifest fetch failed: %s", e)
+            self.poll()
             self.wake.wait(float(self.cfg["manifest_poll"]))
             self.wake.clear()
 
@@ -374,6 +412,7 @@ class Content:
 def _selfcheck():
     import http.server
     import shutil
+    import stat
     import tempfile
 
     # activation timing
@@ -456,8 +495,9 @@ def _selfcheck():
         c.forget_token()  # idempotent
         assert c.token() is None
         open(os.path.join(tmp, "token"), "w").write("t\n")
+        open(os.path.join(tmp, MANAGEMENT_FILE), "w").write("s\n")
         assert os.path.join(tmp, "token") in reset(tmp)
-        assert not any(os.path.exists(os.path.join(tmp, n)) for n in ("token", "state.json", "current.mp4"))
+        assert not any(os.path.exists(os.path.join(tmp, n)) for n in ("token", MANAGEMENT_FILE, "state.json", "current.mp4"))
 
         # check(): manifest poll walk-through (fetch_manifest stubbed, files from the test server)
         global fetch_manifest
@@ -503,6 +543,34 @@ def _selfcheck():
             served["m"] = {**wait, "wifi_setup": "x"}
             c.check()
             assert c.wifi_setup_request() is None
+            # management_secret (QR sticker): stored 0600, replaced on rotation, kept when missing or
+            # junk, deleted on null; never part of version
+            secret_path = os.path.join(tmp, MANAGEMENT_FILE)
+            s1, s2 = "A" * 43, "b-_" * 14 + "z"
+            served["m"] = {**wait, "management_secret": s1}
+            c.check()
+            assert hits == ["/a.mp4"] and c.pending_version() is None and c.management_secret() == s1
+            assert stat.S_IMODE(os.stat(secret_path).st_mode) == 0o600
+            served["m"] = {**wait, "management_secret": s2}
+            c.check()
+            assert c.management_secret() == s2 and stat.S_IMODE(os.stat(secret_path).st_mode) == 0o600
+            assert not os.path.exists(secret_path + ".tmp")
+            for junk in ("short", "x" * 43 + "!", 42, ["A" * 43], "A" * 129):
+                served["m"] = {**wait, "management_secret": junk}
+                c.check()
+                assert c.management_secret() == s2, junk
+            served["m"] = wait  # an older CMS without the field
+            c.check()
+            assert c.management_secret() == s2
+            served["m"] = {**wait, "management_secret": None}
+            c.check()
+            assert c.management_secret() is None and not os.path.exists(secret_path)
+            served["m"] = {**wait, "management_secret": s1}
+            c.check()
+            c.forget_token()  # 401 (manifest or heartbeat): token and sticker secret go together
+            assert c.token() is None and c.management_secret() is None
+            open(os.path.join(tmp, "token"), "w").write("t\n")
+            c.check()  # back to the walk
             # rotation: same version, nothing downloaded, taken over and kept in state.json
             served["m"] = {**wait, "rotation": 90, "orientation": "portrait"}
             c.check()
@@ -542,10 +610,10 @@ def _selfcheck():
             c.check()
             assert c.pending_version() is None and c.due(time.time()) is None
             # nothing to play while identifying: like a 204, but the name still shows
-            served["m"] = {"version": None, "identify_until": 4102444860, "rotation": 90,
+            served["m"] = {"version": None, "identify_until": 4102444860, "rotation": 90, "management_secret": s1,
                            "screen": {"id": 1, "name": "Kantine", "group_id": None}}
             c.check()
-            assert c.rotation() == 90
+            assert c.rotation() == 90 and c.management_secret() == s1
             assert not c.has_current() and c.current_manifest() is None and c.pending_version() is None
             assert c.identify_until() == 4102444860 and c.screen_name() == "Kantine"
             # 204: everything gone
@@ -553,6 +621,7 @@ def _selfcheck():
             c.check()
             assert not c.has_current() and c.current_manifest() is None and c.identify_until() == 0
             assert c.rotation() == 90  # a 204 has no body: the panel still hangs the same way
+            assert c.management_secret() == s1  # and the sticker keeps working
         finally:
             fetch_manifest = real_fetch
         srv.shutdown()
@@ -566,11 +635,20 @@ def _selfcheck():
         cms = mock_cms.make_server(mock_cms.parse_args(["--bind", "127.0.0.1", "--port", "0", "--media", tmp]))
         threading.Thread(target=cms.serve_forever, daemon=True).start()
         cms_url = f"http://127.0.0.1:{cms.server_port}"
-        mock_cms.STATE.update(manifest=None, identify_until=0, rotation=0)
-        assert fetch_manifest(cms_url, "devtoken") is None  # 204
+        mock_cms.STATE.update(manifest=None, identify_until=0, rotation=0, management=False)
+        assert fetch_manifest(cms_url, "devtoken") is None  # 204 (an older CMS: no secret either)
         open(os.path.join(tmp, "token"), "w").write("devtoken\n")
         c = Content({"state_dir": tmp, "cms_url": cms_url, "manifest_poll": 30})
         post = lambda path: urllib.request.urlopen(urllib.request.Request(cms_url + path, method="POST"), timeout=5).read()
+        # the sticker secret over the wire: also with nothing published, rotated by "Nieuwe QR"
+        post("/admin/management-qr?enabled=1")
+        c.poll()
+        first = c.management_secret()
+        assert first == mock_cms.TOKENS["devtoken"]["secret"] and len(first) == 43
+        assert stat.S_IMODE(os.stat(os.path.join(tmp, MANAGEMENT_FILE)).st_mode) == 0o600
+        post("/admin/management-qr")
+        c.poll()
+        assert c.management_secret() == mock_cms.TOKENS["devtoken"]["secret"] != first
         post("/admin/publish?file=a.mp4&delay=0&duration=60&orientation=portrait")
         c.check()
         assert c.rotation() == 0 and c.pending_version()
@@ -597,6 +675,11 @@ def _selfcheck():
         urllib.request.urlopen(hb, timeout=5).read()
         c.check()
         assert c.update_request() is None
+        assert c.management_secret()
+        post("/admin/unpair")  # 401: token and secret gone
+        c.poll()
+        assert c.token() is None and c.management_secret() is None
+        assert not os.path.exists(os.path.join(tmp, MANAGEMENT_FILE))
         cms.shutdown()
     finally:
         shutil.rmtree(tmp)

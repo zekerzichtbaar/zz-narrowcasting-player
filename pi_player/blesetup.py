@@ -2,7 +2,9 @@
 
 Protocol: docs/ble-setup.md. Like portal.py this is only a front end: networks, status and errors
 come from netman.WifiSetup, and connect/rescan go to its job queue, so all nmcli work stays on
-the wifi thread. The D-Bus side runs a GLib main loop in its own thread.
+the wifi thread. The D-Bus side runs a GLib main loop in its own thread. The same GATT application
+carries the management service of a paired screen (blemanage.py, docs/ble-management.md); outside
+the setup window this service is locked.
 
 Self-check: python3 -m pi_player.blesetup
 """
@@ -193,9 +195,12 @@ class BleSetup:
 
     pairing: callable -> the Pairing.info dict or None; paired: callable -> bool."""
 
-    def __init__(self, wifi, dev_id, base_url, pairing=lambda: None, paired=lambda: False):
+    def __init__(self, wifi, dev_id, base_url, pairing=lambda: None, paired=lambda: False, manage=None):
         self.wifi, self.dev_id = wifi, dev_id
         self.pairing, self.paired = pairing, paired
+        self.manage = manage
+        if manage:
+            manage.busy = lambda: bool(self.pending)
         self.token = wifi.token
         self.url = setup_url(base_url, dev_id, self.token)
         self.name = local_name(dev_id)
@@ -210,7 +215,9 @@ class BleSetup:
         self.pending_since = 0.0
         self.seen_error = None
         self.wanted_until = 0.0
-        self.advertising = False
+        self.setup_open = False
+        self.advertising = None  # None / "setup" / "manage": the advertisement registered now
+        self.adv_kind = None
         self.adv_busy = False
         self.adv_next = 0.0
         self.registered = False
@@ -226,6 +233,19 @@ class BleSetup:
         return self
 
     # called on the GLib thread
+    def setup_read(self, value, offset=0):
+        if not self.setup_open:
+            raise Unauthorized("setup service locked outside the setup window")
+        self.wifi.touch()
+        return value[offset:]
+
+    def setup_write(self, offset, value):
+        if not self.setup_open:
+            raise Unauthorized("setup service locked outside the setup window")
+        frame = self.reassembler.write(offset, value)
+        if frame is not None:
+            self.handle_frame(frame)
+
     def handle_frame(self, frame):
         cmd = open_frame(self.token, frame)
         w = self.wifi
@@ -290,24 +310,33 @@ class BleSetup:
         if self.bluez_up and not self.registered and now >= self.next_try:
             self.next_try = now + RETRY
             self._register()
-        self._advertise(w.wanted or now < self.wanted_until)
+        from .blemanage import advert_kind
+        self.setup_open = w.wanted or now < self.wanted_until
+        if self.manage:
+            self.manage.tick()
+        self._advertise(advert_kind(self.setup_open, bool(self.manage and not self.manage.locked)))
 
-    def _advertise(self, on):
+    def _advertise(self, kind):
         """Async on purpose: bluetoothd reads the advertisement's properties back from us while the
-        call is pending, and we are the GLib thread that has to answer."""
+        call is pending, and we are the GLib thread that has to answer. It reads them at register
+        time, so another service UUID means unregister first, then register on a later refresh."""
         now = time.monotonic()
-        if not self.registered or on == self.advertising or self.adv_busy or now < self.adv_next:
+        if not self.registered or kind == self.advertising or self.adv_busy or now < self.adv_next:
             return
+        on = self.advertising is None
         self.adv_busy, self.adv_next = True, now + RETRY
+        if on:
+            self.adv_kind = kind
 
         def ok():
-            self.adv_busy, self.advertising = False, on
-            log.info("bluetooth: %s", f"advertising as {self.name}" if on else "advertising stopped")
+            self.adv_busy, self.adv_next = False, 0.0
+            self.advertising = kind if on else None
+            log.info("bluetooth: %s", f"advertising as {self.name} ({kind})" if on else "advertising stopped")
 
         def fail(e):
             self.adv_busy = False
             if not on:
-                self.advertising = False
+                self.advertising = None
             log.warning("bluetooth advertising %s: %s", "start" if on else "stop", e)
 
         mgr = self._iface("org.bluez.LEAdvertisingManager1")
@@ -327,13 +356,32 @@ class BleSetup:
         self.bus = dbus.SystemBus()
         objs = _objects(self, dbus)
         self.status_chrc = objs["status"]
+        if self.manage:
+            self.manage.notify = objs["response"].changed
         self.bus.watch_name_owner(BLUEZ, self._bluez_owner)
+        self.bus.add_signal_receiver(self._device_changed, signal_name="PropertiesChanged",
+                                     dbus_interface=DBUS_PROPS, bus_name=BLUEZ, arg0="org.bluez.Device1",
+                                     path_keyword="path")
+        self.bus.add_signal_receiver(self._device_removed, signal_name="InterfacesRemoved",
+                                     dbus_interface=DBUS_OM, bus_name=BLUEZ)
         GLib.timeout_add(500, self.refresh)
         GLib.MainLoop().run()
 
+    def _device_changed(self, interface, changed, invalidated, path=None):
+        if self.manage and "Connected" in changed and not changed["Connected"]:
+            self.manage.end(str(path))
+
+    def _device_removed(self, path, interfaces):
+        if self.manage and "org.bluez.Device1" in interfaces:
+            self.manage.end(str(path))
+
     def _bluez_owner(self, owner):
         """bluetoothd (re)started or went away: register again on the next refresh."""
-        self.registered = self.advertising = self.adv_busy = False
+        self.registered = self.adv_busy = False
+        self.advertising = None
+        if self.manage:
+            for dev in list(self.manage.sessions):
+                self.manage.end(dev)
         self.adv_next = 0.0
         self.bluez_up, self.next_try = bool(owner), 0.0
         if not owner:
@@ -359,10 +407,11 @@ class BleSetup:
         props = dbus.Interface(self.bus.get_object(BLUEZ, self.adapter), DBUS_PROPS)
         props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
         props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(False))
+        props.Set("org.bluez.Adapter1", "Alias", dbus.String(self.name))  # GAP name, not the hostname
 
         def ok():
             self.registered = True
-            log.info("bluetooth: wifi setup service registered on %s", self.adapter)
+            log.info("bluetooth: wifi setup + management services registered on %s", self.adapter)
             self.refresh()
 
         def fail(e):
@@ -373,14 +422,19 @@ class BleSetup:
 
 
 def _objects(ble, dbus):
-    """Export the GATT application (service + 3 characteristics) and the advertisement."""
+    """Export the GATT application (setup service + management service, 3 characteristics each)
+    and the advertisement."""
     import dbus.service
+    from . import blemanage
 
     class Unauth(dbus.exceptions.DBusException):
         _dbus_error_name = "org.bluez.Error.NotAuthorized"
 
     class Failed(dbus.exceptions.DBusException):
         _dbus_error_name = "org.bluez.Error.Failed"
+
+    class Unlikely(dbus.exceptions.DBusException):
+        _dbus_error_name = "org.bluez.Error.InvalidArguments"  # not mapped by bluetoothd: ATT 0x0e
 
     class NotSupported(dbus.exceptions.DBusException):
         _dbus_error_name = "org.bluez.Error.NotSupported"
@@ -391,18 +445,27 @@ def _objects(ble, dbus):
     def offset_of(options):
         return int(options.get("offset", 0))
 
+    def device_of(options):
+        return str(options.get("device", ""))
+
     class Chrc(dbus.service.Object):
-        def __init__(self, path, uuid, flags):
-            self.path, self.uuid, self.flags = path, uuid, flags
+        def __init__(self, service, path, uuid, flags):
+            self.service, self.path, self.uuid, self.flags = service, path, uuid, flags
             self.notifying = False
             dbus.service.Object.__init__(self, ble.bus, path)
 
         def props(self):
-            return {GATT_CHRC: {"Service": dbus.ObjectPath(APP_PATH + "/service0"), "UUID": self.uuid,
+            return {GATT_CHRC: {"Service": dbus.ObjectPath(self.service), "UUID": self.uuid,
                                 "Flags": dbus.Array(self.flags, signature="s")}}
 
         def value(self):
             return b""
+
+        def read(self, options):
+            try:
+                return ble.setup_read(self.value(), offset_of(options))
+            except Unauthorized as e:
+                raise Unauth(str(e))
 
         @dbus.service.method(DBUS_PROPS, in_signature="ss", out_signature="v")
         def Get(self, interface, prop):
@@ -418,8 +481,7 @@ def _objects(ble, dbus):
 
         @dbus.service.method(GATT_CHRC, in_signature="a{sv}", out_signature="ay")
         def ReadValue(self, options):
-            ble.wifi.touch()
-            return byte_array(self.value()[offset_of(options):])
+            return byte_array(self.read(options))
 
         @dbus.service.method(GATT_CHRC, in_signature="aya{sv}")
         def WriteValue(self, value, options):
@@ -441,6 +503,10 @@ def _objects(ble, dbus):
         def value(self):
             return ble.status_value
 
+        def changed(self, data):
+            if ble.setup_open:
+                Chrc.changed(self, data)
+
     class Networks(Chrc):
         def value(self):
             return ble.networks_value
@@ -449,9 +515,7 @@ def _objects(ble, dbus):
         @dbus.service.method(GATT_CHRC, in_signature="aya{sv}")
         def WriteValue(self, value, options):
             try:
-                frame = ble.reassembler.write(offset_of(options), bytes(value))
-                if frame is not None:
-                    ble.handle_frame(frame)
+                ble.setup_write(offset_of(options), bytes(value))
             except Unauthorized as e:
                 log.warning("bluetooth: rejected command: %s", e)
                 raise Unauth(str(e))
@@ -459,15 +523,54 @@ def _objects(ble, dbus):
                 log.warning("bluetooth: bad command: %s", e)
                 raise Failed(str(e))
 
-    base = APP_PATH + "/service0"
-    chrcs = [Status(base + "/char0", STATUS_UUID, ["read", "notify"]),
-             Networks(base + "/char1", NETWORKS_UUID, ["read"]),
-             Command(base + "/char2", COMMAND_UUID, ["write"])]
+    def managed(call):
+        if not ble.manage:
+            raise Unauth("management not available")
+        try:
+            return call()
+        except blemanage.Unauthorized as e:
+            log.warning("bluetooth management: rejected: %s", e)
+            raise Unauth(str(e))
+        except blemanage.BadFrame as e:
+            log.warning("bluetooth management: bad write: %s", e)
+            raise Unlikely(str(e))
+
+    class Session(Chrc):
+        def read(self, options):
+            return managed(lambda: ble.manage.session_read(device_of(options), offset_of(options)))
+
+        @dbus.service.method(GATT_CHRC, in_signature="aya{sv}")
+        def WriteValue(self, value, options):
+            managed(lambda: ble.manage.session_write(device_of(options), offset_of(options), bytes(value)))
+
+    class Request(Chrc):
+        @dbus.service.method(GATT_CHRC, in_signature="aya{sv}")
+        def WriteValue(self, value, options):
+            managed(lambda: ble.manage.request_write(device_of(options), offset_of(options), bytes(value)))
+
+    class Response(Chrc):
+        def read(self, options):
+            return managed(lambda: ble.manage.response_read(device_of(options), offset_of(options)))
+
+    setup, manage = APP_PATH + "/service0", APP_PATH + "/service1"
+    services = {
+        setup: (SERVICE_UUID, [Status(setup, setup + "/char0", STATUS_UUID, ["read", "notify"]),
+                               Networks(setup, setup + "/char1", NETWORKS_UUID, ["read"]),
+                               Command(setup, setup + "/char2", COMMAND_UUID, ["write"])]),
+        manage: (blemanage.SERVICE_UUID,
+                 [Session(manage, manage + "/char0", blemanage.SESSION_UUID, ["read", "write"]),
+                  Request(manage, manage + "/char1", blemanage.REQUEST_UUID, ["write"]),
+                  Response(manage, manage + "/char2", blemanage.RESPONSE_UUID, ["read", "notify"])]),
+    }
 
     class Service(dbus.service.Object):
+        def __init__(self, path, uuid, chrcs):
+            self.path, self.uuid, self.chrcs = path, uuid, chrcs
+            dbus.service.Object.__init__(self, ble.bus, path)
+
         def props(self):
-            return {GATT_SERVICE: {"UUID": SERVICE_UUID, "Primary": True,
-                                   "Characteristics": dbus.Array([dbus.ObjectPath(c.path) for c in chrcs],
+            return {GATT_SERVICE: {"UUID": self.uuid, "Primary": True,
+                                   "Characteristics": dbus.Array([dbus.ObjectPath(c.path) for c in self.chrcs],
                                                                  signature="o")}}
 
         @dbus.service.method(DBUS_PROPS, in_signature="ss", out_signature="v")
@@ -478,20 +581,23 @@ def _objects(ble, dbus):
         def GetAll(self, interface):
             return self.props()[interface]
 
-    service = Service(ble.bus, base)
+    svcs = [Service(path, uuid, chrcs) for path, (uuid, chrcs) in services.items()]
 
     class App(dbus.service.Object):
         @dbus.service.method(DBUS_OM, out_signature="a{oa{sa{sv}}}")
         def GetManagedObjects(self):
-            out = {dbus.ObjectPath(base): service.props()}
-            for c in chrcs:
-                out[dbus.ObjectPath(c.path)] = c.props()
+            out = {}
+            for svc in svcs:
+                out[dbus.ObjectPath(svc.path)] = svc.props()
+                for c in svc.chrcs:
+                    out[dbus.ObjectPath(c.path)] = c.props()
             return out
 
     class Advertisement(dbus.service.Object):
         def props(self):
+            uuid = SERVICE_UUID if ble.adv_kind == "setup" else blemanage.SERVICE_UUID
             return {LE_ADV: {"Type": "peripheral",
-                             "ServiceUUIDs": dbus.Array([SERVICE_UUID], signature="s"),
+                             "ServiceUUIDs": dbus.Array([uuid], signature="s"),
                              "LocalName": dbus.String(ble.name),
                              "Discoverable": dbus.Boolean(True)}}
 
@@ -505,11 +611,11 @@ def _objects(ble, dbus):
 
         @dbus.service.method(LE_ADV)
         def Release(self):
-            ble.advertising = False
+            ble.advertising = None
 
     App(ble.bus, APP_PATH)
     Advertisement(ble.bus, ADV_PATH)
-    return {"status": chrcs[0]}
+    return {"status": services[setup][1][0], "response": services[manage][1][2]}
 
 
 VECTOR_TOKEN = bytes(range(16))
@@ -578,7 +684,76 @@ def _selfcheck():
     assert status(w, False, None, None, None, True)["state"] == "paired"
     data = encode_status(status(dict(w, error="x" * 600), True, None, None, None, False), 9)
     assert len(data) <= MAX_VALUE and json.loads(data)["seq"] == 9
+    _selfcheck_service()
+    from . import blemanage
+    blemanage._selfcheck()
     print("blesetup self-check OK")
+
+
+def _selfcheck_service():
+    """Setup service locked outside the setup window, advertising per docs/ble-management.md."""
+    from . import blemanage, netman
+    dev = "pi-00000000abcd1e2f"
+    w = netman.WifiSetup(dev)
+    store = {"s": None}
+    m = blemanage.Manager(lambda: store["s"], w)
+    ble = BleSetup(w, dev, "https://app.zekerzichtbaar.tv/setup", manage=m)
+    adv = []
+
+    class AdvManager:
+        def RegisterAdvertisement(self, path, opts, reply_handler, error_handler):
+            adv.append(("register", ble.adv_kind))
+            reply_handler()
+
+        def UnregisterAdvertisement(self, path, reply_handler, error_handler):
+            adv.append(("unregister",))
+            reply_handler()
+
+    ble._iface = lambda name: AdvManager()
+    ble.registered = True
+
+    def locked():
+        for call in (lambda: ble.setup_read(ble.status_value), lambda: ble.setup_read(ble.networks_value, 2),
+                     lambda: ble.setup_write(0, seal(w.token, {"op": "scan"}))):
+            try:
+                call()
+                raise AssertionError("setup service readable outside the setup window")
+            except Unauthorized:
+                pass
+        return w.jobs.empty()
+
+    ble._refresh()  # unpaired, no secret, not in WIFI_SETUP: nothing advertised, all locked
+    assert not ble.setup_open and ble.advertising is None and adv == [] and locked()
+    assert m.locked
+    w.wanted = True  # WIFI_SETUP: the setup service as before
+    ble._refresh()
+    assert ble.setup_open and ble.advertising == "setup" and adv == [("register", "setup")]
+    assert ble.setup_read(ble.status_value) == ble.status_value and json.loads(ble.status_value)["state"] == "ready"
+    assert ble.setup_read(ble.networks_value, 1) == ble.networks_value[1:]
+    ble.setup_write(0, seal(w.token, {"op": "scan"}))
+    assert w.jobs.get_nowait() == ("rescan",) and ble.pending and m.busy()
+    ble.pending = None
+    store["s"] = "S" * 43  # paired in the window: still the setup advertisement
+    ble._refresh()
+    assert not m.locked and adv == [("register", "setup")]
+    w.wanted = False  # left WIFI_SETUP: setup for LINGER more, so the phone sees the result
+    ble._refresh()
+    assert ble.setup_open and ble.advertising == "setup"
+    ble.wanted_until = 0.0  # LINGER over: locked, management advertised instead
+    ble._refresh()
+    assert not ble.setup_open and ble.advertising is None and adv[-1] == ("unregister",) and locked()
+    ble._refresh()
+    assert ble.advertising == "manage" and adv[-1] == ("register", "manage")
+    ble._refresh()
+    assert len(adv) == 3
+    store["s"] = "R" * 43  # rotation: same advertisement, no re-registration
+    ble._refresh()
+    assert len(adv) == 3 and ble.advertising == "manage"
+    store["s"] = None  # unpaired (401) or withdrawn: nothing advertised, management locked
+    ble._refresh()
+    assert ble.advertising is None and adv[-1] == ("unregister",) and m.locked
+    ble._refresh()
+    assert len(adv) == 4
 
 
 if __name__ == "__main__":

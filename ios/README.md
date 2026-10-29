@@ -4,6 +4,10 @@ Sets up a screen's wifi over Bluetooth: the TV's QR code opens the App Clip "Sch
 which finds the Pi, lists its networks and sends the chosen network encrypted with the token
 from the QR. Protocol: [`../docs/ble-setup.md`](../docs/ble-setup.md).
 
+The QR sticker on a paired player (`/setup?d=..&s=..`, no `k`) opens management instead: the
+screen's status and switching its wifi, also while it is online. Protocol:
+[`../docs/ble-management.md`](../docs/ble-management.md). `ScreenLink` picks the flow (`k` wins).
+
 | Part | What |
 |---|---|
 | `WifiSetupKit/` | Swift package. `WifiSetupKit`: protocol, crypto, CoreBluetooth transport, mock Pi, `SetupClient` state machine. `WifiSetupUI`: the shared SwiftUI flow |
@@ -34,12 +38,16 @@ cd ios && xcodebuild -project Narrowcasting.xcodeproj -scheme NarrowcastingClip 
 
 The Simulator has no Bluetooth: launch with `-mockSetup` (scheme option, off by default) or env
 `MOCK_SETUP=1` for a simulated Pi. In the mock, password `fout1234` fails and anything else gets the
-screen online with pairing code `K7Q-4M2`. A Simulator with the full app installed won't launch the
-clip; uninstall the app first.
+screen online with pairing code `K7Q-4M2`. `-mockManage` (env `MOCK_MANAGE=1`) opens a sticker link
+against a simulated paired Pi with the real management crypto; there too `fout1234` fails (and falls
+back to "Kantine"). A Simulator with the full app installed won't launch the clip; uninstall the app
+first.
 
 Release builds have the same mock behind the demo link
 `https://app.zekerzichtbaar.tv/setup?d=DEMO&k=AAECAwQFBgcICQoLDA0ODw` (device IDs are hex, so `DEMO` is
-never a real screen). App Review uses it, so keep it working.
+never a real screen). App Review uses it, so keep it working. The sticker equivalent,
+`https://app.zekerzichtbaar.tv/setup?d=DEMO&s=0123456789abcdefghijklmnopqrstuvwxyzABCDEFG`, opens
+management against the simulated Pi.
 
 ## Run on an iPhone against a real screen
 
