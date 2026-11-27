@@ -31,23 +31,34 @@ EXAMPLES = [
     ("wifi-clip-resume.png", "Speelt zo verder", "Heeft het scherm al iets om te spelen, dan speelt het na de countdown verder.", "landscape"),
     ("wifi-clip-noap.png", "Instelnetwerk start niet", "Het scherm kan zijn eigen instelnetwerk niet maken: sluit een netwerkkabel aan.", "landscape"),
     ("wifi-none.png", "Geen netwerk", "Zonder wifi-instelling: sluit een netwerkkabel aan.", "landscape"),
-    ("pairing-90.png", "Koppelen", "Op een staand scherm.", "portrait"),
-    ("waiting-90.png", "Wacht op een playlist", "Op een staand scherm.", "portrait"),
-    ("identify-90.png", "Identificeren", "Op een staand scherm.", "portrait"),
-    ("wifi-90.png", "Wifi instellen", "Op een staand scherm.", "portrait"),
+    # Portrait: the same screens on a panel hung at 90 degrees, same titles and text.
+    ("pairing-connecting-90.png", "Opstarten", "Net aangezet: de speler zoekt verbinding met Zeker Zichtbaar.", "portrait"),
+    ("pairing-90.png", "Koppelen", "Een nieuwe of ontkoppelde speler: koppel hem met deze code of QR op Schermen.", "portrait"),
+    ("waiting-90.png", "Wacht op een playlist", "Gekoppeld, maar er is nog geen playlist gekozen of gepubliceerd.", "portrait"),
+    ("identify-90.png", "Identificeren", "Na \"Scherm identificeren\" toont het scherm een minuut zijn naam.", "portrait"),
+    ("update", "Bijwerken", "Tijdens een update staat linksonder dit label; de video speelt gewoon door.", "portrait"),
+    ("wifi-clip-90.png", "Wifi instellen", "Geen netwerk na het opstarten, of \"Wifi opnieuw instellen\": scan de QR met je telefoon.", "portrait"),
+    ("wifi-busy-90.png", "Verbinden met wifi", "Het scherm probeert het gekozen netwerk.", "portrait"),
+    ("wifi-clip-error-90.png", "Wifi mislukt", "Verbinden lukte niet, bijvoorbeeld door een verkeerd wachtwoord.", "portrait"),
+    ("wifi-clip-retry-90.png", "Opgeslagen netwerken proberen", "Elke minuut probeert het scherm de netwerken die het al kent.", "portrait"),
+    ("wifi-clip-resume-90.png", "Speelt zo verder", "Heeft het scherm al iets om te spelen, dan speelt het na de countdown verder.", "portrait"),
+    ("wifi-clip-noap-90.png", "Instelnetwerk start niet", "Het scherm kan zijn eigen instelnetwerk niet maken: sluit een netwerkkabel aan.", "portrait"),
+    ("wifi-none-90.png", "Geen netwerk", "Zonder wifi-instelling: sluit een netwerkkabel aan.", "portrait"),
 ]
 
 WIDTH = 1280  # long side of the webp: sharp in the dialog, small in the repo
 
 
-def _update_frame(src):
-    """The update label sits bottom left over the playing video: put it on a dim stand-in frame."""
-    frame = Image.new("RGB", (1920, 1080))
-    for y in range(1080):  # a dark blue-grey gradient as "the video"
-        v = int(70 - 40 * y / 1080)
-        frame.paste((v, v + 8, v + 24), (0, y, 1920, y + 1))
+def _update_frame(src, size=(1920, 1080)):
+    """The update label sits bottom left over the playing video: put it on a dim stand-in frame.
+    `src` is the upright label (rotation 0), `size` the upright frame (1080x1920 for portrait)."""
+    w, h = size
+    frame = Image.new("RGB", size)
+    for y in range(h):  # a dark blue-grey gradient as "the video"
+        v = int(70 - 40 * y / h)
+        frame.paste((v, v + 8, v + 24), (0, y, w, y + 1))
     label = Image.open(src).convert("RGBA")
-    frame.paste(label, (48, 1080 - 48 - label.height), label)
+    frame.paste(label, (48, h - 48 - label.height), label)
     return frame
 
 
@@ -67,14 +78,15 @@ def main():
         subprocess.run([sys.executable, "-m", "pi_player.screens", tmp], cwd=here, check=True,
                        stdout=subprocess.DEVNULL)
         for i, (src, title, text, orientation) in enumerate(EXAMPLES):
-            if src == "update":
-                img = _update_frame(os.path.join(tmp, "update-label-0.png"))
+            if src == "update":  # built upright, no turning
+                size = (1080, 1920) if orientation == "portrait" else (1920, 1080)
+                img = _update_frame(os.path.join(tmp, "update-label-0.png"), size)
             else:
                 img = Image.open(os.path.join(tmp, src)).convert("RGB")
-            if orientation == "portrait":
+            if orientation == "portrait" and src != "update":
                 img = img.rotate(-90, expand=True)  # rendered for a panel hung 90 degrees clockwise: upright
             img.thumbnail((WIDTH, WIDTH))
-            name = f"{i + 1:02d}-{os.path.splitext(src)[0]}.webp"
+            name = f"{i + 1:02d}-{os.path.splitext(src)[0]}{'-90' if src == 'update' and orientation == 'portrait' else ''}.webp"
             img.save(os.path.join(out, name), "WEBP", quality=82, method=6)
             items.append({"src": f"/pi-voorbeelden/{name}", "title": title, "text": text,
                           "orientation": orientation})

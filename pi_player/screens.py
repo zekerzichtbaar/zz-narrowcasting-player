@@ -600,78 +600,99 @@ def wifi_setup(path, ssid=None, password=None, status=None, error=None, footer="
                       busy=bool(status) and not error, badge=_badge(status), error=bool(error),
                       resume=note, title_size=168)
         return _save(img, path, rotation)
-    img = _canvas()
+    tall = portrait(rotation)
+    img = _canvas(tall)
     d = ImageDraw.Draw(img, "RGBA")
-    _brand(img, d, logo, 120, 84, 93, 33)
-    _chip(img, d, W - 120, 84 + 37, *_badge(status))
-    _foot(img, d, None, footer, resume=note, bottom=66)
-    top, bottom = 84 + 75 + 42, H - 66 - 60 - 30
+    w, h = img.size
+    pad = 80 if tall else 120
+    if tall:  # like "Koppel dit scherm" staand: stacked wordmark, the QR codes under the text
+        _brand(img, d, logo, pad, 84, 104, 32, stacked=True)
+    else:
+        _brand(img, d, logo, pad, 84, 93, 33)
+    _chip(img, d, w - pad, 84 + 37, *_badge(status))
+    _foot(img, d, None, footer, resume=note, pad=pad, bottom=66)
+    top, bottom = 84 + 75 + 42, h - 66 - 60 - 30 - (100 if tall and note else 0)
+    ind = pad + 44  # text under a step lines up with the step's text
+    title = 136 if tall else 126
     rows = []  # (height, gap after, draw(y))
     add = rows.append
     if setup_url:  # App Clip QR; the hotspot (if up) as the route for other phones
-        q = 450
-        qx = W - 120 - q
-        fit = qx - 96 - 120 - 60
-        add((round(0.95 * 126), 36, lambda y: _imp(d, 120, y, "Wifi instellen", 126)))
-        add((46, 9, lambda y: _step(d, 120, y + 36, 1, "Scan de QR-code met de camera van je iPhone", fit=fit + 16)))
-        add((36, 30, lambda y: _text(d, (164, y + 18), "‘Scherm instellen’ opent en zet de wifi van het scherm "
+        q = 520 if tall else 450
+        qx = (w - q) // 2 if tall else w - pad - q
+        fit = w - ind - pad if tall else qx - 96 - pad - 60
+        add((round(0.95 * title), 36, lambda y: _imp(d, pad, y, "Wifi instellen", title)))
+        add((46, 9, lambda y: _step(d, pad, y + 36, 1, "Scan de QR-code met de camera van je iPhone", fit=fit + 16)))
+        add((36, 30, lambda y: _text(d, (ind, y + 18), "‘Scherm instellen’ opent en zet de wifi van het scherm "
                                      "voor je in", 27, MUTED, "sans", "lm", fit=fit)))
         if ssid and not ap:
-            add((46, 30, lambda y: _step(d, 120, y + 36, 2, "Andere telefoon? Het instelnetwerk komt zo terug",
+            add((46, 30, lambda y: _step(d, pad, y + 36, 2, "Andere telefoon? Het instelnetwerk komt zo terug",
                                          fit=fit + 16)))
         elif ssid:
-            add((46, 21, lambda y: _step(d, 120, y + 36, 2, "Andere telefoon? Verbind met het wifi-netwerk:",
+            add((46, 21, lambda y: _step(d, pad, y + 36, 2, "Andere telefoon? Verbind met het wifi-netwerk:",
                                          fit=fit + 16)))
-            add((108, 21, lambda y: _cards(img, d, 164, y, (("Netwerk", ssid), ("Wachtwoord", password)), fit)))
-            add((30, 30, lambda y: _text(d, (164, y + 15), f"Geen pagina? Open {portal_url} in je browser", 24,
+            add((108, 21, lambda y: _cards(img, d, ind, y, (("Netwerk", ssid), ("Wachtwoord", password)), fit)))
+            add((30, 30, lambda y: _text(d, (ind, y + 15), f"Geen pagina? Open {portal_url} in je browser", 24,
                                          MUTED, "mono", "lm", fit=fit)))
         if error or status:
-            add((42, 0, lambda y: _text(d, (164, y + 21), error or status, 33, ERROR if error else TONES["busy"][0],
+            add((42, 0, lambda y: _text(d, (ind, y + 21), error or status, 33, ERROR if error else TONES["busy"][0],
                                         "medium", "lm", fit=fit)))
         total = sum(r[0] + r[1] for r in rows) - rows[-1][1]
-        y = top + (bottom - top - total) / 2
+        qr_h = q + 21 + 30
+        if tall:  # text and QR as one column, centred
+            y = top + (bottom - top - (total + 72 + qr_h)) / 2
+            qy = y + total + 72
+        else:
+            y = top + (bottom - top - total) / 2
+            qy = top + (bottom - top - qr_h) / 2
         for height, gap, draw in rows:
             draw(y)
             y += height + gap
-        qy = top + (bottom - top - (q + 21 + 30)) / 2
         _qr(img, setup_url, qx, int(qy), q)
         _text(d, (qx + q / 2, qy + q + 21), "Scan met je camera", 27, MUTED, "sans", "mt")
         return _save(img, path, rotation)
-    q = 300  # two QR cards stacked in the right column: 1 = join the hotspot, 2 = open the page
-    qx = W - 120 - q
-    fit = qx - 96 - 120 - 60
-    add((round(0.95 * 126), 36, lambda y: _imp(d, 120, y, "Wifi instellen", 126)))
-    add((46, 21, lambda y: _step(d, 120, y + 36, 1, "Scan code 1, of maak verbinding met:", fit=fit + 16)))
-    add((108, 18, lambda y: _cards(img, d, 164, y, (("Netwerk", ssid), ("Wachtwoord", password)), fit)))
-    add((30, 36, lambda y: _text(d, (164, y + 15), "De instelpagina opent daarna vanzelf op je telefoon", 27, MUTED,
+    # Two QR cards, 1 = join the hotspot, 2 = open the page: stacked on the right, or side by side
+    # under the text on a portrait panel.
+    q = 400 if tall else 300
+    qx = w - pad - q
+    fit = w - ind - pad if tall else qx - 96 - pad - 60
+    add((round(0.95 * title), 36, lambda y: _imp(d, pad, y, "Wifi instellen", title)))
+    add((46, 21, lambda y: _step(d, pad, y + 36, 1, "Scan code 1, of maak verbinding met:", fit=fit + 16)))
+    add((108, 18, lambda y: _cards(img, d, ind, y, (("Netwerk", ssid), ("Wachtwoord", password)), fit)))
+    add((30, 36, lambda y: _text(d, (ind, y + 15), "De instelpagina opent daarna vanzelf op je telefoon", 27, MUTED,
                                  "sans", "lm", fit=fit)))
-    add((46, 15, lambda y: _step(d, 120, y + 36, 2, "Opent er niets? Scan code 2, of ga naar:", fit=fit + 16)))
-    add((48, 24, lambda y: _text(d, (164, y + 24), portal_url, 42, FG, "mono", "lm", fit=fit)))
+    add((46, 15, lambda y: _step(d, pad, y + 36, 2, "Opent er niets? Scan code 2, of ga naar:", fit=fit + 16)))
+    add((48, 24, lambda y: _text(d, (ind, y + 24), portal_url, 42, FG, "mono", "lm", fit=fit)))
     if error or status:
-        add((42, 12, lambda y: _text(d, (164, y + 21), error or status, 33, ERROR if error else TONES["busy"][0],
+        add((42, 12, lambda y: _text(d, (ind, y + 21), error or status, 33, ERROR if error else TONES["busy"][0],
                                      "medium", "lm", fit=fit)))
     if not ap:
-        add((36, 0, lambda y: _text(d, (164, y + 18), "Het instelnetwerk komt zo terug", 27, MUTED, "sans", "lm",
+        add((36, 0, lambda y: _text(d, (ind, y + 18), "Het instelnetwerk komt zo terug", 27, MUTED, "sans", "lm",
                                     fit=fit)))
     total = sum(r[0] + r[1] for r in rows) - rows[-1][1]
-    y = top + (bottom - top - total) / 2
-    for height, gap, draw in rows:
+    card = q + 14 + 30
+    if tall:
+        gap = w - 2 * pad - 2 * q
+        y = top + (bottom - top - (total + 72 + card)) / 2
+        spots = [(pad, y + total + 72), (pad + q + gap, y + total + 72)]
+    else:
+        y = top + (bottom - top - total) / 2
+        qy0 = top + (bottom - top - (2 * card + 30)) / 2
+        spots = [(qx, qy0), (qx, qy0 + card + 30)]
+    for height, gap_after, draw in rows:
         draw(y)
-        y += height + gap
-    block = 2 * (q + 14 + 30) + 30
-    qy0 = top + (bottom - top - block) / 2
-    for i, (data, label) in enumerate(((wifi_qr(ssid, password), "1  Verbind met de wifi"),
-                                       (portal_url, "2  Open de instelpagina"))):
-        qy = int(qy0 + i * (q + 14 + 30 + 30))
-        _qr(img, data, qx, qy, q)
+        y += height + gap_after
+    for (sx, sy), (data, label) in zip(spots, ((wifi_qr(ssid, password), "1  Verbind met de wifi"),
+                                               (portal_url, "2  Open de instelpagina"))):
+        sx, sy = int(sx), int(sy)
+        _qr(img, data, sx, sy, q)
         n, s = label.split("  ", 1)
         nw = d.textlength(f"0{n}", font=_font(20, "mono"))
         sw = d.textlength(s, font=_font(27))
-        lx = qx + (q - nw - 12 - sw) / 2
-        _text(d, (lx, qy + q + 14 + 27), f"0{n}", 20, MAGENTA, "mono", "ls")
-        _text(d, (lx + nw + 12, qy + q + 14 + 27), s, 27, MUTED, "sans", "ls")
+        lx = sx + (q - nw - 12 - sw) / 2
+        _text(d, (lx, sy + q + 14 + 27), f"0{n}", 20, MAGENTA, "mono", "ls")
+        _text(d, (lx + nw + 12, sy + q + 14 + 27), s, 27, MUTED, "sans", "ls")
         if not ap:  # hotspot briefly down: the codes don't work right now
-            d.rounded_rectangle([qx, qy, qx + q, qy + q], radius=36, fill=INK + (190,))
+            d.rounded_rectangle([sx, sy, sx + q, sy + q], radius=36, fill=INK + (190,))
     return _save(img, path, rotation)
 
 
@@ -760,3 +781,16 @@ if __name__ == "__main__":
         print(identify(os.path.join(out, f"identify-{r}.png"), "Kantine links bij de bar", f, rotation=r))
         print(wifi_setup(os.path.join(out, f"wifi-none-{r}.png"), footer=f, rotation=r))
         print(wifi_setup(os.path.join(out, f"wifi-{r}.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f, rotation=r))
+        print(pairing(os.path.join(out, f"pairing-connecting-{r}.png"), footer=f, rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-clip-{r}.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                         setup_url=clip, rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-busy-{r}.png"), status="Verbinden met Kantine…", footer=f,
+                         rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-clip-error-{r}.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                         setup_url=clip, error="Verbinden met Kantine mislukt: Verkeerd wachtwoord?", rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-clip-retry-{r}.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                         ap=False, setup_url=clip, status="Opgeslagen netwerken proberen…", resume=2, rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-clip-resume-{r}.png"), "Narrowcast-1E2F", "k7q4m2xa", footer=f,
+                         setup_url=clip, resume=9, rotation=r))
+        print(wifi_setup(os.path.join(out, f"wifi-clip-noap-{r}.png"), footer=f, setup_url=clip,
+                         error="Het instelnetwerk start niet. Sluit een netwerkkabel aan.", rotation=r))
