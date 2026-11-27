@@ -47,28 +47,43 @@ struct ManageFlowView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            TopBar {
+                if client.phase == .choosing {
+                    Button { client.backToStatus() } label: {
+                        Label("Status", systemImage: "chevron.left")
+                    }
+                    .accessibilityIdentifier("button.backToStatus")
+                } else if let close {
+                    Button("Klaar", action: close)
+                }
+            } trailing: {
+                switch client.phase {
+                case .status:
+                    if client.isRefreshing {
+                        Spinner().frame(height: 40)
+                    } else {
+                        Button {
+                            Task { await client.refreshStatus() }
+                        } label: {
+                            Label("Vernieuwen", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(!client.isConnected)
+                        .accessibilityIdentifier("button.refresh")
+                    }
+                case .choosing:
+                    RescanButton(scanning: client.isScanning) { client.rescan() }
+                default:
+                    DeviceLabel(text: title)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.background.ignoresSafeArea())
-                .navigationTitle(title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(Theme.background, for: .navigationBar)
-                .toolbar {
-                    if client.phase == .choosing {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Status", systemImage: "chevron.left") { client.backToStatus() }
-                                .labelStyle(.titleAndIcon)
-                                .accessibilityIdentifier("button.backToStatus")
-                        }
-                    } else if let close {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Klaar", action: close)
-                        }
-                    }
-                }
                 .animation(.smooth(duration: 0.25), value: client.phase)
         }
+        .background(Theme.background.ignoresSafeArea())
         .tint(Theme.accent)
         .preferredColorScheme(.dark)
     }
@@ -76,11 +91,11 @@ struct ManageFlowView: View {
     @ViewBuilder private var content: some View {
         switch client.phase {
         case let .searching(slow):
-            StepView(systemImage: "antenna.radiowaves.left.and.right", busy: !slow,
-                     title: slow ? "Scherm nog niet gevonden" : "Scherm zoeken…",
-                     message: slow
-                        ? "Ga dichter bij de speler staan en controleer of hij aan staat. We blijven zoeken."
-                        : "Houd je telefoon in de buurt van de speler.")
+            SearchingView(slow: slow,
+                          title: slow ? "Scherm nog niet gevonden" : "Scherm zoeken…",
+                          message: slow
+                            ? "Ga dichter bij de speler staan en controleer of hij aan staat. We blijven zoeken."
+                            : "Houd je telefoon in de buurt van de speler.")
                 .accessibilityIdentifier("step.searching")
         case .connecting:
             StepView(systemImage: "dot.radiowaves.left.and.right", busy: true,
@@ -114,6 +129,7 @@ struct ManageFlowView: View {
                         .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("button.retry")
                     Button(ssid.map { "Naar status (\($0))" } ?? "Naar status") { client.backToStatus() }
+                        .buttonStyle(SecondaryButtonStyle())
                         .accessibilityIdentifier("button.status")
                 }
                 .padding(.top, 12)
@@ -154,98 +170,107 @@ private struct ManageStatusView: View {
     let client: ManageClient
 
     var body: some View {
-        List {
-            if client.isReconnecting {
-                Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                if client.isReconnecting {
                     HStack(spacing: 10) {
-                        ProgressView()
-                        Text("Verbinding met het scherm herstellen…").foregroundStyle(Theme.muted)
+                        Spinner()
+                        Text("Verbinding met het scherm herstellen…")
+                            .font(Theme.font(15))
+                            .foregroundStyle(Theme.muted)
                     }
-                    .listRowBackground(Theme.card)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .card()
+                    .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("label.reconnecting")
                 }
-            }
-            if let status = client.status {
-                Section {
+                if let status = client.status {
                     OnlineHeader(status: status, localName: client.link.localName)
-                        .listRowBackground(Theme.card)
-                }
-                Section("Netwerk") {
-                    row("Wifi", value: wifiText(status), id: "label.network") {
-                        if let signal = status.signal, status.ssid != nil {
-                            Image(systemName: "wifi", variableValue: Double(signal) / 100)
-                                .foregroundStyle(Theme.soft)
+                    section("Netwerk") {
+                        row("Wifi", value: wifiText(status), id: "label.network", mono: true) {
+                            if let signal = status.signal, status.ssid != nil {
+                                Image(systemName: "wifi", variableValue: Double(signal) / 100)
+                                    .foregroundStyle(Theme.soft)
+                            }
+                        }
+                        if status.network == "ethernet" {
+                            row("Kabel", value: "Verbonden", id: "label.ethernet")
+                        }
+                        row("IP-adres", value: status.ip ?? "Geen", id: "label.ip", mono: true, last: true)
+                    }
+                    section("Scherm") {
+                        row("Toont", value: screenText(status.screenState), id: "label.screen")
+                        row("Gekoppeld", value: status.paired.map { $0 ? "Ja" : "Nee" } ?? "Onbekend", id: "label.paired")
+                        row("Spelerversie", value: status.agentVersion ?? "Onbekend", id: "label.version", mono: true,
+                            last: status.device == nil)
+                        if let device = status.device {
+                            row("Apparaat", value: device, id: "label.device", last: true)
                         }
                     }
-                    if status.network == "ethernet" {
-                        row("Kabel", value: "Verbonden", id: "label.ethernet")
-                    }
-                    row("IP-adres", value: status.ip ?? "Geen", id: "label.ip")
-                }
-                Section("Scherm") {
-                    row("Toont", value: screenText(status.screenState), id: "label.screen")
-                    row("Gekoppeld", value: status.paired.map { $0 ? "Ja" : "Nee" } ?? "Onbekend", id: "label.paired")
-                    row("Spelerversie", value: status.agentVersion ?? "Onbekend", id: "label.version")
-                    if let device = status.device {
-                        row("Apparaat", value: device, id: "label.device")
-                    }
-                }
-                if let job = status.job, job.op == "connect", let msg = job.msg {
-                    Section("Laatste wifi-wijziging") {
-                        Text(msg)
-                            .font(.subheadline)
-                            .foregroundStyle(job.state == "failed" ? Theme.error : Theme.muted)
-                            .listRowBackground(Theme.card)
-                            .accessibilityIdentifier("label.job")
-                    }
-                }
-                if status.canChangeWifi {
-                    Section {
-                        Button("Wifi wijzigen") { client.chooseNetwork() }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .disabled(!client.isConnected)
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
-                            .accessibilityIdentifier("button.changeWifi")
+                    if let job = status.job, job.op == "connect", let msg = job.msg {
+                        section("Laatste wifi-wijziging") {
+                            Text(msg)
+                                .font(Theme.font(15))
+                                .foregroundStyle(job.state == "failed" ? Theme.error : Theme.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(18)
+                                .accessibilityIdentifier("label.job")
+                        }
                     }
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
         }
-        .scrollContentBackground(.hidden)
         .refreshable { await client.refreshStatus() }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if client.isRefreshing {
-                    ProgressView()
-                } else {
-                    Button("Vernieuwen", systemImage: "arrow.clockwise") {
-                        Task { await client.refreshStatus() }
-                    }
-                    .disabled(!client.isConnected)
-                    .accessibilityIdentifier("button.refresh")
+        .accessibilityIdentifier("step.status")
+        .safeAreaInset(edge: .bottom) {
+            if client.status?.canChangeWifi == true {
+                Button { client.chooseNetwork() } label: {
+                    Label("Wifi wijzigen", systemImage: "wifi")
                 }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(!client.isConnected)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Theme.background)
+                .accessibilityIdentifier("button.changeWifi")
             }
         }
-        .accessibilityIdentifier("step.status")
     }
 
-    private func row(_ label: String, value: String, id: String) -> some View {
-        row(label, value: value, id: id) { EmptyView() }
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Kicker(text: title).padding(.horizontal, 4)
+            VStack(spacing: 0) { content() }.card()
+        }
     }
 
-    private func row<Accessory: View>(_ label: String, value: String, id: String,
+    private func row(_ label: String, value: String, id: String, mono: Bool = false, last: Bool = false) -> some View {
+        row(label, value: value, id: id, mono: mono, last: last) { EmptyView() }
+    }
+
+    private func row<Accessory: View>(_ label: String, value: String, id: String, mono: Bool = false, last: Bool = false,
                                       @ViewBuilder accessory: () -> Accessory) -> some View {
         HStack(spacing: 8) {
-            Text(label).foregroundStyle(Theme.muted)
+            Text(label).font(Theme.font(16)).foregroundStyle(Theme.muted)
             Spacer()
             Text(value)
+                .font(mono ? Theme.mono(15) : Theme.font(16))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             accessory()
         }
-        .listRowBackground(Theme.card)
+        .padding(.horizontal, 18)
+        .frame(minHeight: 54)
+        .overlay(alignment: .bottom) {
+            if !last { Rectangle().fill(Theme.line).frame(height: 1) }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(id)
     }
@@ -267,35 +292,26 @@ private struct ManageStatusView: View {
     }
 }
 
+/// The screen's name in Impact with its online state as a chip (canvas "App scherm beheren").
 private struct OnlineHeader: View {
     let status: ManageStatus
     let localName: String
 
     private var online: Bool? { status.online }
-    private var tint: Color { online == true ? Theme.accent : Theme.error }
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle().fill(tint.opacity(0.14)).frame(width: 52, height: 52)
-                Image(systemName: online == true ? "checkmark.circle.fill" : "wifi.exclamationmark")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(status.name ?? localName)
-                    .font(.headline)
-                    .foregroundStyle(Theme.text)
-                    .accessibilityIdentifier("label.screenName")
-                Text(online == true ? "Online" : online == false ? "Offline: de server is niet bereikbaar" : "Online-status onbekend")
-                    .font(.subheadline)
-                    .foregroundStyle(online == true ? Theme.accent : Theme.muted)
-                    .accessibilityIdentifier("label.online")
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            Text(status.name ?? localName)
+                .impactTitle(56)
+                .foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("label.screenName")
+            Chip(text: online == true ? "Online" : online == false ? "Offline: de server is niet bereikbaar" : "Online-status onbekend",
+                 tone: online == true ? Theme.ok : online == false ? Theme.error : Theme.muted)
+                .accessibilityIdentifier("label.online")
         }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .combine)
+        .padding(.horizontal, 4)
     }
 }
 
@@ -304,63 +320,28 @@ private struct ManageNetworkListView: View {
     @State private var choice: NetworkListView.Choice?
 
     var body: some View {
-        List {
-            Section {
-                if let notice = client.notice {
-                    Label(notice, systemImage: "exclamationmark.triangle.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.error)
-                        .listRowBackground(Theme.error.opacity(0.12))
-                        .accessibilityIdentifier("label.notice")
-                }
-                ForEach(client.networks) { network in
-                    Button { choice = .init(network: network) } label: {
-                        HStack {
-                            NetworkRow(network: network)
-                            if network.ssid == client.status?.ssid {
-                                Image(systemName: "checkmark").foregroundStyle(Theme.accent)
-                            }
-                        }
-                    }
-                    .accessibilityIdentifier("network.\(network.ssid)")
-                }
-                .listRowBackground(Theme.card)
-                if client.networks.isEmpty {
-                    Text(client.isScanning ? "Netwerken zoeken…" : "Geen netwerken gevonden. Trek omlaag om opnieuw te zoeken.")
-                        .foregroundStyle(Theme.muted)
-                        .listRowBackground(Theme.card)
-                }
-                Button { choice = .init(network: nil) } label: {
-                    Label("Ander netwerk…", systemImage: "plus")
-                        .foregroundStyle(Theme.accent)
-                }
-                .listRowBackground(Theme.card)
-                .accessibilityIdentifier("network.other")
-            } header: {
-                Text("Kies het nieuwe wifi-netwerk voor het scherm")
-                    .textCase(nil)
-                    .font(.subheadline)
+        NetworkPicker(title: "Wifi wijzigen", subtitle: "Kies het nieuwe wifi-netwerk voor het scherm",
+                      notice: client.notice, networks: client.networks, isScanning: client.isScanning,
+                      current: client.status?.ssid, choose: { choice = .init(network: $0) }) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 18))
                     .foregroundStyle(Theme.muted)
-            } footer: {
                 Text("Lukt het niet, dan gaat het scherm terug naar het netwerk dat het nu heeft.")
+                    .font(Theme.font(14))
+                    .lineSpacing(3)
                     .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .card()
+            .padding(.horizontal, -4)
         }
-        .scrollContentBackground(.hidden)
         .refreshable {
             client.rescan()
             while client.isScanning {
                 try? await Task.sleep(for: .milliseconds(300))
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if client.isScanning {
-                    ProgressView()
-                } else {
-                    Button("Vernieuwen", systemImage: "arrow.clockwise") { client.rescan() }
-                        .accessibilityIdentifier("button.rescan")
-                }
             }
         }
         .sheet(item: $choice) { choice in
@@ -380,12 +361,12 @@ private struct ManageBluetoothView: View {
     var body: some View {
         switch problem {
         case .off:
-            StepView(systemImage: "antenna.radiowaves.left.and.right.slash", tint: Theme.error,
+            StepView(systemImage: "antenna.radiowaves.left.and.right.slash", tint: Theme.warn,
                      title: "Bluetooth staat uit",
                      message: "Zet Bluetooth aan in het Bedieningspaneel. Het scherm wordt via Bluetooth beheerd.")
                 .accessibilityIdentifier("step.bluetoothOff")
         case .unauthorized:
-            StepView(systemImage: "lock.shield", tint: Theme.error, title: "Geen toegang tot Bluetooth",
+            StepView(systemImage: "lock.shield", tint: Theme.warn, title: "Geen toegang tot Bluetooth",
                      message: "Sta Bluetooth toe in Instellingen om het scherm te kunnen vinden.") {
                 Button("Open Instellingen") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -395,7 +376,7 @@ private struct ManageBluetoothView: View {
             }
             .accessibilityIdentifier("step.bluetoothUnauthorized")
         case .unsupported:
-            StepView(systemImage: "exclamationmark.triangle", tint: Theme.error,
+            StepView(systemImage: "exclamationmark.triangle", tint: Theme.warn,
                      title: "Bluetooth niet beschikbaar",
                      message: "Deze telefoon ondersteunt geen Bluetooth LE, en dat is nodig om het scherm te beheren.")
         }

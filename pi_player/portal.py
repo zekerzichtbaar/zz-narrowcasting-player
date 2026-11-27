@@ -18,58 +18,65 @@ import urllib.parse
 
 log = logging.getLogger("pi-player")
 
-# Same look as the TV screens (screens.py palette + fonts); fonts and logo are served by us,
-# the hotspot has no internet.
+# Same look as the TV screens (screens.py, huisstijl D3): ink, a faint magenta glow, GT Walsheim for
+# text, Impact for the heading, Geist Mono for data. Fonts are served by us: the hotspot has no internet.
 CSS = """
-@font-face{font-family:Bricolage;src:url(/a/display.ttf);font-display:swap}
+@font-face{font-family:Walsheim;src:url(/a/sans.ttf);font-display:swap}
+@font-face{font-family:Walsheim;src:url(/a/bold.ttf);font-weight:700;font-display:swap}
+@font-face{font-family:ZZImpact;src:url(/a/impact.ttf);font-display:swap}
 @font-face{font-family:GeistMono;src:url(/a/mono.ttf);font-display:swap}
-*{box-sizing:border-box}html{background:#07080a}
-body{margin:0;min-height:100vh;font:17px/1.45 system-ui,-apple-system,sans-serif;color:#f2f4f6;
-background:radial-gradient(circle at 10% 0,rgba(61,220,132,.22),transparent 340px),
-radial-gradient(circle at 85% 100%,rgba(37,70,240,.22),transparent 380px) no-repeat}
+*{box-sizing:border-box}html{background:#0c0c11;color-scheme:dark}
+body{margin:0;min-height:100vh;font:17px/1.45 Walsheim,system-ui,-apple-system,sans-serif;color:#fff;
+background:radial-gradient(ellipse at 0 0,rgba(255,0,128,.16),transparent 60%) no-repeat;accent-color:#ff0080;
+caret-color:#ff0080}
+::selection{background:#ff0080;color:#fff}
 main{max-width:480px;margin:0 auto;padding:20px 16px 32px}
-.top{display:flex;align-items:center;gap:10px;margin:0 0 28px}
-.top b{font:20px Bricolage,system-ui,sans-serif;flex:1}.top svg{width:36px;height:36px}
+.top{display:flex;align-items:center;gap:10px;margin:0 0 32px}
+.top svg{width:44px;height:36px;flex:none}
+.top b{flex:1;font-size:15px;font-weight:400;letter-spacing:.14em;text-transform:uppercase;white-space:nowrap}
+.top b strong{font-weight:700}
 .mono{font-family:GeistMono,ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}
-.top small{font-size:11px;color:#a3abb7;display:flex;align-items:center;gap:6px}
-.top small:before{content:"";width:8px;height:8px;border-radius:50%;background:#f5b83d}
-h1{font:30px/1.15 Bricolage,system-ui,sans-serif;margin:0 0 8px}p{color:#a3abb7;margin:0 0 20px}
-.box{border-radius:12px;padding:12px 14px;margin:0 0 20px;border:1px solid}
-.err{background:rgba(255,110,100,.12);border-color:rgba(255,110,100,.4);color:#ff6e64}
-.ok{background:rgba(61,220,132,.1);border-color:rgba(61,220,132,.35);color:#c9d1db}.ok b{color:#3ddc84}
-h2{font-size:16px;margin:26px 0 10px;color:#c9d1db;font-weight:500;display:flex;gap:12px;align-items:center}
-h2 i{font:normal 13px GeistMono,ui-monospace,monospace;display:inline-grid;place-items:center;
-width:28px;height:28px;border-radius:50%;border:2px solid #3a414c;color:#f2f4f6}
-label.net{display:flex;align-items:center;gap:12px;padding:14px;border:2px solid #3a414c;
-border-radius:12px;margin:0 0 8px;cursor:pointer;min-height:56px;background:rgba(7,8,10,.6)}
-label.net:has(input:checked){border-color:#3ddc84;background:rgba(61,220,132,.08)}
-label.net input{width:20px;height:20px;accent-color:#3ddc84;margin:0}
-label.net span{flex:1;overflow-wrap:anywhere;font-weight:500}label.net small{color:#a3abb7;white-space:nowrap}
-details{margin:4px 0 0;color:#a3abb7}summary{cursor:pointer;padding:8px 0}
-input[type=text],input[type=password]{width:100%;font:inherit;padding:14px;border-radius:12px;
-border:2px solid #3a414c;background:rgba(7,8,10,.6);color:inherit;margin:4px 0 8px}
-input:focus{outline:none;border-color:#3ddc84}::placeholder{color:#6b7380}
-.show{display:flex;gap:8px;align-items:center;color:#a3abb7;font-size:15px;margin:0 0 16px}
-.show input{accent-color:#3ddc84}
-button{font:inherit;font-weight:700;padding:16px;border-radius:12px;border:0;width:100%;
-background:#3ddc84;color:#04200e;margin:8px 0 0}
-button.sec{background:none;color:#a3abb7;font-weight:500;padding:10px;text-decoration:underline}
-.foot{font-size:14px;margin:28px 0 0;text-align:center;color:#6b7380}
-.zz{display:flex;justify-content:center;align-items:center;gap:8px;margin:20px 0 0;
-font:14px Bricolage,system-ui,sans-serif;color:#c8cacc}.zz img{height:21px}
+.top small{font-size:11px;color:#ffc24d;background:rgba(255,194,77,.15);border-radius:14px;padding:5px 10px;
+display:flex;align-items:center;gap:6px;white-space:nowrap}
+.top small:before{content:"";width:7px;height:7px;border-radius:50%;background:#ffc24d}
+h1{font:40px/1.05 ZZImpact,Impact,'Arial Narrow',sans-serif;text-transform:uppercase;margin:0 0 10px;
+text-wrap:balance}
+p{color:#a9a9b6;margin:0 0 20px}
+.box{border-radius:14px;padding:12px 14px;margin:0 0 20px;border:1px solid}
+.err{background:rgba(255,122,102,.12);border-color:rgba(255,122,102,.4);color:#ff7a66}
+.ok{background:rgba(74,222,155,.1);border-color:rgba(74,222,155,.35);color:#d6d6de}.ok b{color:#4ade9b}
+h2{font-size:16px;margin:28px 0 10px;color:#a9a9b6;font-weight:400;display:flex;gap:12px;align-items:center}
+h2 i{font:normal 13px GeistMono,ui-monospace,monospace;color:#ff0080}
+label.net{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid #2a2a34;
+border-radius:8px;margin:0 0 8px;cursor:pointer;min-height:56px;background:#16161d}
+label.net:has(input:checked){border-color:#fff}
+label.net input{width:20px;height:20px;margin:0}
+label.net span{flex:1;overflow-wrap:anywhere}label.net small{color:#a9a9b6;white-space:nowrap}
+details{margin:4px 0 0;color:#a9a9b6}summary{cursor:pointer;padding:8px 0}
+input[type=text],input[type=password]{width:100%;font:inherit;padding:13px 14px;border-radius:8px;
+border:1px solid #2a2a34;background:#16161d;color:inherit;margin:4px 0 8px}
+input:focus{outline:none;border-color:#fff}::placeholder{color:#8a8a98}
+.show{display:flex;gap:8px;align-items:center;color:#a9a9b6;font-size:15px;margin:0 0 16px}
+button{font:inherit;font-weight:700;padding:16px;border-radius:8px;border:0;width:100%;
+background:#fff;color:#0c0c11;margin:8px 0 0}
+button.sec{background:none;color:#a9a9b6;font-weight:400;padding:10px;text-decoration:underline;
+text-underline-offset:3px}
+.foot{font-size:14px;margin:28px 0 0;text-align:center;color:#8a8a98}
 """
 
-# The Narrowcasting mark (screens._mark / CMS app-logo-icon.tsx)
-MARK = """<svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="7.8" fill="#3ddc84"/>
-<g transform="translate(8 8) scale(.75) translate(-4 -4.5)" fill="none" stroke="#04200e" stroke-width="3"
-stroke-linecap="round"><rect x="6" y="9" width="28" height="18.5" rx="3.5"/><path d="M14.5 32.5h11"/>
-<path d="M17.5 14.25v8l6.5-4z" fill="#04200e" stroke="none"/><circle cx="33" cy="10" r="5.75"
-fill="#3ddc84" stroke="none"/><circle cx="33" cy="10" r="4.5" fill="#ff0080" stroke="none"/></g></svg>"""
+# Logo D3 (screens._mark / CMS app-logo-icon.tsx): magenta blob, white z, white TV sticker with ink.
+MARK = """<svg viewBox="0 0 60 48" aria-hidden="true">
+<path fill="#ff0080" d="m49.828 9.4869c-6.4792-5.493-15.954-10.244-27.799-9.333-1.3267 0.1021-2.6662 0.25462-4.0154 0.4632-20.703 3.197-22.511 28.814-10.768 40.89 6.4852 6.6703 17.102 9.2108 30.955 1.5644 4.1535-2.2928 7.5544-4.6361 10.281-6.9866 12.181-10.5 9.5797-19.617 1.3457-26.598z"/>
+<path fill="#fff" d="m36.892 26.466c-2.2008-1.5402-6.0661-0.072-8.4833 0.2687 3.0896-2.9715 11.332-6.2127 8.0968-9.9872-3.8171-4.6348-14.86-3.3398-17.177-0.5449-0.8701 1.0491-1.0906 2.999 0.2728 3.8168 2.7266 1.9085 8.8074-0.2728 8.8074-0.2728-3.5447 2.9994-11.261 5.7257-9.3527 10.088 0.9167 1.9483 3.0877 2.9301 5.6994 3.2352 4.7779 0.7829 10.79-0.8337 12.409-2.7868 0.87-1.0491 1.0908-2.999-0.2725-3.8171z"/>
+<rect x="39" y="31" width="19" height="12" rx="3.5" fill="#fff" stroke="#0c0c11" stroke-width="1.5"/>
+<text x="48.5" y="40.2" text-anchor="middle" font-family="Walsheim,sans-serif" font-weight="700"
+font-size="8.5" fill="#0c0c11">TV</text></svg>"""
 
 _DIR = os.path.dirname(__file__)
-ASSETS = {"/a/display.ttf": ("fonts/BricolageGrotesque-Bold.ttf", "font/ttf"),
-          "/a/mono.ttf": ("fonts/GeistMono-Medium.ttf", "font/ttf"),
-          "/a/zz.png": ("zz-logo.png", "image/png")}
+ASSETS = {"/a/sans.ttf": ("fonts/GTWalsheimPro-Regular.ttf", "font/ttf"),
+          "/a/bold.ttf": ("fonts/GTWalsheimPro-Bold.ttf", "font/ttf"),
+          "/a/impact.ttf": ("fonts/ZZImpact.ttf", "font/ttf"),
+          "/a/mono.ttf": ("fonts/GeistMono-Medium.ttf", "font/ttf")}
 
 
 def _bars(signal):
@@ -97,7 +104,7 @@ def page(ssid, networks, error=None, notice=None, status=None):
     return f"""<!doctype html><html lang="nl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Scherm instellen</title>
 <style>{CSS}</style></head><body><main>
-<div class="top">{MARK}<b>Narrowcasting</b><small class="mono">Geen verbinding</small></div>
+<div class="top">{MARK}<b><strong>Zeker</strong>Zichtbaar</b><small class="mono">Geen verbinding</small></div>
 <h1>Verbind het scherm met wifi</h1><p>Kies het netwerk dat het scherm moet gebruiken.</p>
 {msg}
 <form method="post" action="/connect">
@@ -113,7 +120,6 @@ Wachtwoord tonen</label>
 <button type="submit">Verbinden</button></form>
 <form method="post" action="/rescan"><button class="sec" type="submit">Lijst vernieuwen</button></form>
 <p class="foot">Je bent verbonden met het instelnetwerk {e(ssid or "")} van het scherm.</p>
-<div class="zz"><img src="/a/zz.png" alt="">Zeker Zichtbaar</div>
 </main></body></html>"""
 
 

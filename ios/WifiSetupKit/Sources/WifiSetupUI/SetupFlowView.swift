@@ -16,22 +16,25 @@ public struct SetupFlowView: View {
     }
 
     public var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            TopBar {
+                if let close {
+                    Button(client.phase.isFinished ? "Klaar" : "Stop", action: close)
+                }
+            } trailing: {
+                if client.phase == .choosing {
+                    RescanButton(scanning: client.isScanning) { client.rescan() }
+                } else {
+                    DeviceLabel(text: "Scherm \(client.link.deviceID)")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.background.ignoresSafeArea())
-                .navigationTitle("Scherm \(client.link.deviceID)")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(Theme.background, for: .navigationBar)
-                .toolbar {
-                    if let close {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button(client.phase.isFinished ? "Klaar" : "Stop", action: close)
-                        }
-                    }
-                }
                 .animation(.smooth(duration: 0.25), value: client.phase)
         }
+        .background(Theme.background.ignoresSafeArea())
         .tint(Theme.accent)
         .preferredColorScheme(.dark)
     }
@@ -39,11 +42,11 @@ public struct SetupFlowView: View {
     @ViewBuilder private var content: some View {
         switch client.phase {
         case let .searching(slow):
-            StepView(systemImage: "antenna.radiowaves.left.and.right", busy: !slow,
-                     title: slow ? "Scherm nog niet gevonden" : "Scherm zoeken…",
-                     message: slow
-                        ? "Ga dichter bij het scherm staan en controleer of het \"Wifi instellen\" toont. We blijven zoeken."
-                        : "Houd je telefoon in de buurt van het scherm.")
+            SearchingView(slow: slow,
+                          title: slow ? "Scherm nog niet gevonden" : "Scherm zoeken…",
+                          message: slow
+                            ? "Ga dichter bij het scherm staan en controleer of het \"Wifi instellen\" toont. We blijven zoeken."
+                            : "Houd je telefoon in de buurt van het scherm.")
                 .accessibilityIdentifier("step.searching")
         case .connecting:
             StepView(systemImage: "dot.radiowaves.left.and.right", busy: true,
@@ -94,12 +97,12 @@ private struct BluetoothProblemView: View {
     var body: some View {
         switch problem {
         case .off:
-            StepView(systemImage: "antenna.radiowaves.left.and.right.slash", tint: Theme.error,
+            StepView(systemImage: "antenna.radiowaves.left.and.right.slash", tint: Theme.warn,
                      title: "Bluetooth staat uit",
                      message: "Zet Bluetooth aan in het Bedieningspaneel. Het scherm wordt via Bluetooth ingesteld.")
                 .accessibilityIdentifier("step.bluetoothOff")
         case .unauthorized:
-            StepView(systemImage: "lock.shield", tint: Theme.error, title: "Geen toegang tot Bluetooth",
+            StepView(systemImage: "lock.shield", tint: Theme.warn, title: "Geen toegang tot Bluetooth",
                      message: "Sta Bluetooth toe in Instellingen om het scherm te kunnen vinden.") {
                 Button("Open Instellingen") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -109,7 +112,7 @@ private struct BluetoothProblemView: View {
             }
             .accessibilityIdentifier("step.bluetoothUnauthorized")
         case .unsupported:
-            StepView(systemImage: "exclamationmark.triangle", tint: Theme.error,
+            StepView(systemImage: "exclamationmark.triangle", tint: Theme.warn,
                      title: "Bluetooth niet beschikbaar",
                      message: "Deze telefoon ondersteunt geen Bluetooth LE. Gebruik het instelnetwerk dat het scherm toont.")
         }
@@ -123,43 +126,130 @@ private struct OnlineView: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        StepView(systemImage: "checkmark.circle.fill", title: "Het scherm is online",
+        StepView(systemImage: "checkmark", title: "Het scherm is online",
                  message: ssid.map { "Verbonden met \($0)." }) {
-            VStack(spacing: 10) {
-                Text("KOPPELCODE")
-                    .font(.caption.monospaced().weight(.medium))
-                    .tracking(1.5)
-                    .foregroundStyle(Theme.muted)
+            VStack(alignment: .leading, spacing: 14) {
+                Kicker(text: "Koppelcode")
                 if let code {
-                    Text(code)
-                        .font(.system(size: 44, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Theme.text)
-                        .textSelection(.enabled)
+                    PairingCodeBoxes(code: code)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(code)
                         .accessibilityIdentifier("label.code")
                 } else {
                     HStack(spacing: 10) {
-                        ProgressView()
-                        Text("Code ophalen…").foregroundStyle(Theme.muted)
+                        Spinner()
+                        Text("Code ophalen…").font(Theme.font(16)).foregroundStyle(Theme.muted)
                     }
-                    .frame(height: 52)
+                    .frame(height: 58)
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 20)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .padding(.top, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(22)
+            .card()
 
-            if let url {
-                Button("Koppel dit scherm") { openURL(url) }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .accessibilityIdentifier("button.pair")
+            VStack(alignment: .leading, spacing: 14) {
+                if let url {
+                    Button("Koppel dit scherm") { openURL(url) }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .accessibilityIdentifier("button.pair")
+                }
+                Text("Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.")
+                    .font(Theme.font(14))
+                    .foregroundStyle(Theme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.")
-                .font(.footnote)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(Theme.muted)
         }
         .accessibilityIdentifier("step.online")
+    }
+}
+
+/// The pairing code in mono boxes, the dash between them (canvas `code`).
+struct PairingCodeBoxes: View {
+    let code: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(code.enumerated()), id: \.offset) { _, char in
+                if char == "-" {
+                    Text("-")
+                        .font(Theme.mono(24))
+                        .foregroundStyle(Theme.dim)
+                        .frame(width: 12)
+                } else {
+                    Text(String(char))
+                        .font(Theme.mono(30, relativeTo: .title))
+                        .minimumScaleFactor(0.6)
+                        .foregroundStyle(Theme.text)
+                        .frame(minWidth: 0, maxWidth: 44, minHeight: 58)
+                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line2, lineWidth: 1))
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+}
+
+/// Concentric magenta rings around the z while looking for the screen (canvas "App scherm zoeken").
+struct SearchingView: View {
+    let slow: Bool
+    let title: String
+    let message: String
+    @State private var pulse = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 40) {
+                    ZStack {
+                        Circle().strokeBorder(Theme.accent.opacity(0.18), lineWidth: 2)
+                            .scaleEffect(pulse ? 1 : 0.92)
+                        Circle().strokeBorder(Theme.accent.opacity(0.35), lineWidth: 2).padding(36)
+                        Circle().fill(Theme.accent.opacity(0.12)).padding(72)
+                        LogoMark(sticker: false).frame(width: 76, height: 64)
+                    }
+                    .frame(width: 240, height: 240)
+                    .accessibilityHidden(true)
+                    .animation(slow ? .default : .easeInOut(duration: 1.2).repeatForever(), value: pulse)
+                    .onAppear { pulse = !slow }
+                    .onChange(of: slow) { pulse = !slow }
+                    VStack(spacing: 12) {
+                        Text(title)
+                            .impactTitle(48)
+                            .foregroundStyle(Theme.text)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(message)
+                            .font(Theme.font(17))
+                            .lineSpacing(4)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 32)
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// "Vernieuwen" pill in the header, a spinner while scanning.
+struct RescanButton: View {
+    let scanning: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if scanning {
+            Spinner().frame(height: 40)
+        } else {
+            Button(action: action) {
+                Label("Vernieuwen", systemImage: "arrow.clockwise")
+            }
+            .accessibilityIdentifier("button.rescan")
+        }
     }
 }
 #endif

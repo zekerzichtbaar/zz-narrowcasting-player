@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "WifiSetupKit"),
-        .target(name: "WifiSetupUI", dependencies: ["WifiSetupKit"]),
+        .target(name: "WifiSetupUI", dependencies: ["WifiSetupKit"], resources: [.copy("Fonts")]),
         .testTarget(name: "WifiSetupKitTests", dependencies: ["WifiSetupKit"]),
     ],
     swiftLanguageModes: [.v5]

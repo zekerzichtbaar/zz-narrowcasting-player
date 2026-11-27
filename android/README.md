@@ -27,6 +27,14 @@ scanner and a "paste the link" field.
 
 Package `nl.zekerzichtbaar.narrowcasting`, minSdk 26 (Android 8), targetSdk 36.
 
+Style: house style D3 (canvas "App en App Clip"), the same as the iOS app. Tokens and shared parts in
+`ui/Theme.kt` (`Palette`, `Fonts`, pill buttons, `card()`, `ImpactTitle`, `Kicker`, `Chip`, `Spinner`, `StepView`,
+`TopBar`). Fonts in `res/font/`: GT Walsheim Pro Regular/Medium/Bold and ZZ Impact under Zeker Zichtbaar's licence
+(embedding confirmed by the user, 2026-10-30; not for other use), Geist Mono Medium under the SIL OFL 1.1. Same
+files as `pi_player/fonts/`. The logo (`res/drawable/zz_logo.xml`, `zz_mark.xml`) and the adaptive launcher icon
+(`ic_launcher_foreground.xml` on white, `ic_launcher_monochrome.xml` = the plain z) are vectors from the canvas
+paths; "TV" on the sticker is GT Walsheim Bold as outlines (fonttools).
+
 ## Build
 
 You need JDK 17 or newer and the Android SDK with platform 37 (`sdkmanager "platforms;android-37.0"`).

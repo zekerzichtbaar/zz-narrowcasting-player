@@ -15,6 +15,12 @@ screen's status and switching its wifi, also while it is online. Protocol:
 | `App/` | Full app `nl.zekerzichtbaar.narrowcasting`: same flow, plus a QR scanner (Apple requires the full app to offer the clip's feature) |
 | `ClipUITests/` | XCUITest walking the clip against the mock Pi |
 
+Style: house style D3 (canvas "App en App Clip"), tokens and shared parts in `WifiSetupUI/Theme.swift`.
+Fonts are package resources (`WifiSetupUI/Fonts/`, registered at runtime by `Fonts.register()`, so no
+`UIAppFonts`): GT Walsheim Pro Regular/Medium/Bold and ZZ Impact under Zeker Zichtbaar's licence (embedding
+confirmed by the user, 2026-10-30; not for other use), Geist Mono Medium under the SIL OFL 1.1. Same files as
+`pi_player/fonts/`. App icon and `AppStore/appclip-header-*.png` are rendered from the canvas (headless Chrome).
+
 ## Generate and build
 
 The Xcode project is generated (and git-ignored): `brew install xcodegen`, then

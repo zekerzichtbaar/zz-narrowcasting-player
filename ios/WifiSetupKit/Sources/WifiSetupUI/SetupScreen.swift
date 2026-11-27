@@ -79,7 +79,7 @@ public struct SetupScreen: View {
     }
 }
 
-/// What the App Clip and the app show before they have a link.
+/// What the App Clip and the app show before they have a link (canvas "App start").
 public struct ScanPromptView<Actions: View>: View {
     var message: String
     @ViewBuilder var actions: Actions
@@ -90,13 +90,65 @@ public struct ScanPromptView<Actions: View>: View {
     }
 
     public var body: some View {
-        StepView(systemImage: "qrcode.viewfinder", title: "Scan de QR-code op het scherm", message: message) {
-            actions.padding(.top, 12)
+        VStack(alignment: .leading, spacing: 28) {
+            HStack(spacing: 10) {
+                LogoMark().frame(width: 44, height: 35)
+                Wordmark()
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 40) {
+                    TVWithQR().frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Scan de QR-code op het scherm")
+                            .impactTitle(52)
+                            .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(message)
+                            .font(Theme.font(17))
+                            .lineSpacing(4)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
+            VStack(spacing: 10) { actions }
         }
+        .padding(.horizontal, 24)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+        .frame(maxWidth: 560)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .tint(Theme.accent)
+    }
+}
+
+/// A TV showing a QR code, with the live dot (canvas "App start").
+private struct TVWithQR: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Theme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.line2, lineWidth: 5))
+                    .overlay {
+                        Image(systemName: "qrcode")
+                            .font(.system(size: 56, weight: .regular))
+                            .foregroundStyle(Theme.background)
+                            .frame(width: 96, height: 96)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                Circle().fill(Theme.accent).frame(width: 10, height: 10).padding(14)
+            }
+            .frame(width: 250, height: 164)
+            Capsule().fill(Theme.line2).frame(width: 80, height: 6)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -107,9 +159,14 @@ public extension ScanPromptView where Actions == EmptyView {
 }
 
 public extension View {
-    /// Primary green button style of the setup flow.
+    /// Primary white pill of the setup flow.
     func setupPrimaryButton() -> some View {
         buttonStyle(PrimaryButtonStyle())
+    }
+
+    /// Outlined pill of the setup flow, for the second action.
+    func setupSecondaryButton() -> some View {
+        buttonStyle(SecondaryButtonStyle())
     }
 }
 #endif

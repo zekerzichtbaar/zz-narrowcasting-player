@@ -109,7 +109,7 @@ class SetupFlowTest {
 
     @Test fun demoLinkOpensTheSimulatedScreen() {
         launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://app.zekerzichtbaar.tv/setup?d=DEMO&k=AAECAwQFBgcICQoLDA0ODw")))
-        compose.waitUntilAtLeastOneExists(hasText("Scherm DEMO"), 5000)
+        compose.waitUntilAtLeastOneExists(hasText("Scherm DEMO", ignoreCase = true), 5000)
         waitForTag("network.Kantine")
     }
 

@@ -370,9 +370,11 @@ python3 -m pi_player.screens /tmp/screens      # render the setup screens as PNG
 python3 -m pi_player.portal serve 8000         # preview the captive page with a fake network list
 ```
 
-The setup screens copy the look of the CMS Chromium player (`resources/css/player.css`, house style
-"Samen": colours, Geist / Geist Mono / Bricolage Grotesque from `pi_player/fonts/`, layout), as a still
-frame since a PNG cannot animate. Change the player style in the CMS, change `screens.py` with it.
+The setup screens follow house style D3, the "Tv (Pi 4)" boards of the design canvas
+(https://claude.ai/artifact/JbBoFF1X8siZydxoZDW3M4): ink background with a faint magenta blob, the
+Zeker Zichtbaar logo with its TV sticker, GT Walsheim Pro / ZZ Impact / Geist Mono from
+`pi_player/fonts/`, as a still frame since a PNG cannot animate. `python3 -m pi_player.screens logo`
+redraws `pi_player/zz-logo.png` (the hotspot page's logo) from the same vector paths.
 Rendering the PNGs needs Pillow and qrcode; on a Mac without them:
 `python3.13 -m venv /tmp/pp && /tmp/pp/bin/pip install pillow qrcode`, then use `/tmp/pp/bin/python`.
 

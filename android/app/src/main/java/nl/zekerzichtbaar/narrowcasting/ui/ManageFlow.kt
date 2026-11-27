@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,24 +14,18 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -43,7 +36,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,10 +47,8 @@ import nl.zekerzichtbaar.narrowcasting.setup.BluetoothProblem
 import nl.zekerzichtbaar.narrowcasting.setup.ManageClient
 import nl.zekerzichtbaar.narrowcasting.setup.ManagePhase
 import nl.zekerzichtbaar.narrowcasting.setup.ManageStatus
-import nl.zekerzichtbaar.narrowcasting.setup.WifiNetwork
 
 /** Status and wifi of a paired screen, opened from the QR sticker on the player. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ManageFlow(client: ManageClient, rescanQr: () -> Unit, close: () -> Unit) {
     val phase by client.phase.collectAsStateWithLifecycle()
@@ -70,80 +60,45 @@ fun ManageFlow(client: ManageClient, rescanQr: () -> Unit, close: () -> Unit) {
 
     BackHandler(enabled = phase == ManagePhase.Choosing, onBack = client::backToStatus)
 
-    Scaffold(
-        containerColor = Palette.background,
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = {
-                    Text(
-                        status?.name ?: "Scherm ${client.link.deviceId}",
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+    Column(Modifier.fillMaxSize().background(Palette.background).safeDrawingPadding()) {
+        TopBar(
+            Modifier.padding(top = 8.dp),
+            leading = {
+                if (phase == ManagePhase.Choosing) {
+                    SecondaryButton(
+                        "Status",
+                        onClick = client::backToStatus,
+                        compact = true,
+                        icon = R.drawable.ic_chevron_left,
+                        modifier = Modifier.testTag("button.backToStatus"),
                     )
-                },
-                navigationIcon = {
-                    if (phase == ManagePhase.Choosing) {
-                        TextButton(onClick = client::backToStatus, modifier = Modifier.testTag("button.backToStatus")) {
-                            Icon(painterResource(R.drawable.ic_chevron_left), null, tint = Palette.accent, modifier = Modifier.size(20.dp))
-                            Text("Status", color = Palette.accent, fontSize = 16.sp)
-                        }
-                    } else {
-                        TextButton(onClick = close, modifier = Modifier.testTag("button.close")) {
-                            Text("Klaar", color = Palette.accent, fontSize = 16.sp)
-                        }
-                    }
-                },
-                actions = {
-                    when (phase) {
-                        ManagePhase.Status -> if (refreshing) {
-                            ToolbarSpinner()
-                        } else {
-                            IconButton(onClick = client::refresh, enabled = connected, modifier = Modifier.testTag("button.refresh")) {
-                                Icon(
-                                    painterResource(R.drawable.ic_refresh),
-                                    "Vernieuwen",
-                                    tint = if (connected) Palette.accent else Palette.muted,
-                                )
-                            }
-                        }
-                        ManagePhase.Choosing -> if (scanning) {
-                            ToolbarSpinner()
-                        } else {
-                            IconButton(onClick = client::rescan, modifier = Modifier.testTag("button.rescan")) {
-                                Icon(painterResource(R.drawable.ic_refresh), "Vernieuwen", tint = Palette.accent)
-                            }
-                        }
-                        else -> Unit
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = Palette.background,
-                    titleContentColor = Palette.text,
-                ),
-            )
-        },
-    ) { padding ->
+                } else {
+                    SecondaryButton("Klaar", onClick = close, compact = true, modifier = Modifier.testTag("button.close"))
+                }
+            },
+            trailing = {
+                when (phase) {
+                    ManagePhase.Status -> RescanButton(
+                        refreshing,
+                        onClick = client::refresh,
+                        enabled = connected,
+                        modifier = Modifier.testTag("button.refresh"),
+                    )
+                    ManagePhase.Choosing -> RescanButton(scanning, onClick = client::rescan, modifier = Modifier.testTag("button.rescan"))
+                    else -> DeviceLabel(status?.name ?: "Scherm ${client.link.deviceId}")
+                }
+            },
+        )
         AnimatedContent(
             targetState = phase,
             contentKey = { it::class },
             transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(250)) },
-            modifier = Modifier.padding(padding).fillMaxSize(),
+            modifier = Modifier.fillMaxSize(),
             label = "managePhase",
         ) { current ->
             ManagePhaseContent(current, client, rescanQr, fix)
         }
     }
-}
-
-@Composable
-private fun ToolbarSpinner() {
-    CircularProgressIndicator(
-        color = Palette.muted,
-        strokeWidth = 2.dp,
-        modifier = Modifier.padding(horizontal = 14.dp).size(20.dp),
-    )
 }
 
 @Composable
@@ -154,9 +109,8 @@ private fun ManagePhaseContent(
     fix: (BluetoothProblem) -> Unit,
 ) {
     when (phase) {
-        is ManagePhase.Searching -> StepView(
-            icon = R.drawable.ic_bluetooth_searching,
-            busy = !phase.slow,
+        is ManagePhase.Searching -> SearchingView(
+            slow = phase.slow,
             title = if (phase.slow) "Scherm nog niet gevonden" else "Scherm zoeken…",
             message = if (phase.slow) {
                 "Ga dichter bij de speler staan en controleer of hij aan staat. We blijven zoeken."
@@ -183,7 +137,7 @@ private fun ManagePhaseContent(
             modifier = Modifier.testTag("step.working"),
         )
         is ManagePhase.Joined -> StepView(
-            icon = R.drawable.ic_check_circle,
+            icon = R.drawable.ic_check,
             title = "Verbonden met ${phase.ssid}",
             message = if (phase.online) {
                 "Het scherm is online."
@@ -201,11 +155,13 @@ private fun ManagePhaseContent(
             message = phase.message,
             modifier = Modifier.testTag("step.failed"),
         ) {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PrimaryButton("Opnieuw proberen", onClick = client::backToList, modifier = Modifier.testTag("button.retry"))
-                TextButton(onClick = client::backToStatus, modifier = Modifier.fillMaxWidth().testTag("button.status")) {
-                    Text(phase.ssid?.let { "Naar status ($it)" } ?: "Naar status", color = Palette.accent, fontSize = 16.sp)
-                }
+                SecondaryButton(
+                    phase.ssid?.let { "Naar status ($it)" } ?: "Naar status",
+                    onClick = client::backToStatus,
+                    modifier = Modifier.testTag("button.status"),
+                )
             }
         }
         ManagePhase.Expired -> StepView(
@@ -251,144 +207,144 @@ private fun ManageStatusList(client: ManageClient) {
     val reconnecting by client.isReconnecting.collectAsStateWithLifecycle()
     val connected by client.isConnected.collectAsStateWithLifecycle()
 
-    PullToRefreshBox(
-        isRefreshing = refreshing,
-        onRefresh = client::refresh,
-        modifier = Modifier.fillMaxSize().testTag("step.status"),
-    ) {
-        LazyColumn(
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxSize(),
+    Column(Modifier.fillMaxSize()) {
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = client::refresh,
+            modifier = Modifier.weight(1f).fillMaxWidth().testTag("step.status"),
         ) {
-            if (reconnecting) {
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().background(Palette.card, RoundedCornerShape(12.dp)).padding(14.dp)
-                            .testTag("label.reconnecting"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        CircularProgressIndicator(color = Palette.muted, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                        Text("Verbinding met het scherm herstellen…", color = Palette.muted, fontSize = 15.sp)
+            LazyColumn(
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                if (reconnecting) {
+                    item {
+                        Row(
+                            Modifier.widthIn(max = 560.dp).fillMaxWidth().card().padding(16.dp)
+                                .semantics(mergeDescendants = true) {}
+                                .testTag("label.reconnecting"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Spinner()
+                            Text("Verbinding met het scherm herstellen…", color = Palette.muted, fontSize = 15.sp)
+                        }
+                    }
+                }
+                val s = status ?: return@LazyColumn
+                item { OnlineHeader(s, client.link.localName) }
+                section("Netwerk") {
+                    InfoRow("Wifi", wifiText(s), "label.network", mono = true) {
+                        val signal = s.signal
+                        if (signal != null && s.ssid != null) {
+                            Icon(painterResource(signalIcon(signal)), null, tint = Palette.soft, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    if (s.network == "ethernet") InfoRow("Kabel", "Verbonden", "label.ethernet")
+                    InfoRow("IP-adres", s.ip ?: "Geen", "label.ip", mono = true, last = true)
+                }
+                section("Scherm") {
+                    InfoRow("Toont", screenText(s.screenState), "label.screen")
+                    InfoRow("Gekoppeld", s.paired?.let { if (it) "Ja" else "Nee" } ?: "Onbekend", "label.paired")
+                    InfoRow("Spelerversie", s.agentVersion ?: "Onbekend", "label.version", mono = true, last = s.device == null)
+                    s.device?.let { InfoRow("Apparaat", it, "label.device", last = true) }
+                }
+                val job = s.job
+                val jobMsg = job?.msg
+                if (job != null && job.op == "connect" && jobMsg != null) {
+                    section("Laatste wifi-wijziging") {
+                        Text(
+                            jobMsg,
+                            color = if (job.state == "failed") Palette.error else Palette.muted,
+                            fontSize = 15.sp,
+                            modifier = Modifier.fillMaxWidth().padding(18.dp).testTag("label.job"),
+                        )
                     }
                 }
             }
-            val s = status ?: return@LazyColumn
-            item { OnlineHeader(s, client.link.localName) }
-            section("Netwerk") {
-                InfoRow("Wifi", wifiText(s), "label.network") {
-                    val signal = s.signal
-                    if (signal != null && s.ssid != null) {
-                        Icon(painterResource(signalIcon(signal)), null, tint = Palette.soft, modifier = Modifier.size(20.dp))
-                    }
-                }
-                if (s.network == "ethernet") InfoRow("Kabel", "Verbonden", "label.ethernet")
-                InfoRow("IP-adres", s.ip ?: "Geen", "label.ip")
-            }
-            section("Scherm") {
-                InfoRow("Toont", screenText(s.screenState), "label.screen")
-                InfoRow("Gekoppeld", s.paired?.let { if (it) "Ja" else "Nee" } ?: "Onbekend", "label.paired")
-                InfoRow("Spelerversie", s.agentVersion ?: "Onbekend", "label.version")
-                s.device?.let { InfoRow("Apparaat", it, "label.device") }
-            }
-            val job = s.job
-            val jobMsg = job?.msg
-            if (job != null && job.op == "connect" && jobMsg != null) {
-                section("Laatste wifi-wijziging") {
-                    Text(
-                        jobMsg,
-                        color = if (job.state == "failed") Palette.error else Palette.muted,
-                        fontSize = 15.sp,
-                        modifier = Modifier.padding(16.dp).testTag("label.job"),
-                    )
-                }
-            }
-            if (s.canChangeWifi) {
-                item {
-                    PrimaryButton(
-                        "Wifi wijzigen",
-                        onClick = client::chooseNetwork,
-                        enabled = connected,
-                        modifier = Modifier.padding(top = 12.dp).testTag("button.changeWifi"),
-                    )
-                }
-            }
+        }
+        if (status?.canChangeWifi == true) {
+            PrimaryButton(
+                "Wifi wijzigen",
+                onClick = client::chooseNetwork,
+                enabled = connected,
+                icon = R.drawable.ic_wifi,
+                modifier = Modifier.widthIn(max = 560.dp).align(Alignment.CenterHorizontally)
+                    .padding(horizontal = 20.dp, vertical = 12.dp).testTag("button.changeWifi"),
+            )
         }
     }
 }
 
 private fun LazyListScope.section(title: String, rows: @Composable () -> Unit) {
     item {
-        Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                title.uppercase(),
-                color = Palette.muted,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 1.sp,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-            Column(Modifier.fillMaxWidth().background(Palette.card, RoundedCornerShape(12.dp))) { rows() }
+        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Kicker(title, Modifier.padding(horizontal = 4.dp))
+            Column(Modifier.fillMaxWidth().card()) { rows() }
         }
     }
 }
 
 @Composable
-private fun InfoRow(label: String, value: String, tag: String, accessory: @Composable () -> Unit = {}) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics(mergeDescendants = true) {}.padding(horizontal = 16.dp)
-            .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(label, color = Palette.muted, fontSize = 16.sp)
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            SelectionContainer {
-                Text(value, color = Palette.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+private fun InfoRow(
+    label: String,
+    value: String,
+    tag: String,
+    mono: Boolean = false,
+    last: Boolean = false,
+    accessory: @Composable () -> Unit = {},
+) {
+    Column {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 54.dp).semantics(mergeDescendants = true) {}.padding(horizontal = 18.dp)
+                .testTag(tag),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(label, color = Palette.muted, fontSize = 16.sp)
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                SelectionContainer {
+                    Text(
+                        value,
+                        color = Palette.text,
+                        fontSize = if (mono) 15.sp else 16.sp,
+                        fontFamily = if (mono) Fonts.mono else Fonts.walsheim,
+                        fontWeight = if (mono) FontWeight.Medium else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.MiddleEllipsis,
+                    )
+                }
             }
+            accessory()
         }
-        accessory()
+        if (!last) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
     }
 }
 
+/** The screen's name in Impact with its online state as a chip (canvas "App scherm beheren"). */
 @Composable
 private fun OnlineHeader(status: ManageStatus, localName: String) {
     val online = status.online
-    val tint = if (online == true) Palette.accent else Palette.error
-    Row(
-        Modifier.fillMaxWidth().background(Palette.card, RoundedCornerShape(12.dp)).padding(16.dp)
-            .semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    Column(
+        Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(Modifier.size(52.dp).background(tint.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
-            Icon(
-                painterResource(if (online == true) R.drawable.ic_check_circle else R.drawable.ic_signal_wifi_bad),
-                null,
-                tint = tint,
-                modifier = Modifier.size(26.dp),
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(
-                status.name ?: localName,
-                color = Palette.text,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.testTag("label.screenName"),
-            )
-            Text(
-                when (online) {
-                    true -> "Online"
-                    false -> "Offline: de server is niet bereikbaar"
-                    null -> "Online-status onbekend"
-                },
-                color = if (online == true) Palette.accent else Palette.muted,
-                fontSize = 15.sp,
-                modifier = Modifier.testTag("label.online"),
-            )
-        }
+        ImpactTitle(status.name ?: localName, 56.sp, Modifier.testTag("label.screenName"))
+        Chip(
+            when (online) {
+                true -> "Online"
+                false -> "Offline: de server is niet bereikbaar"
+                null -> "Online-status onbekend"
+            },
+            tone = when (online) {
+                true -> Palette.ok
+                false -> Palette.error
+                null -> Palette.muted
+            },
+            modifier = Modifier.testTag("label.online"),
+        )
     }
 }
 
@@ -406,86 +362,35 @@ private fun screenText(state: String?): String = when (state) {
     else -> state
 }
 
-private class ManageChoice(val network: WifiNetwork?)
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManageNetworkList(client: ManageClient) {
     val networks by client.networks.collectAsStateWithLifecycle()
     val scanning by client.isScanning.collectAsStateWithLifecycle()
     val notice by client.notice.collectAsStateWithLifecycle()
     val status by client.status.collectAsStateWithLifecycle()
-    var choice by remember { mutableStateOf<ManageChoice?>(null) }
+    var choice by remember { mutableStateOf<Choice?>(null) }
 
-    PullToRefreshBox(
-        isRefreshing = scanning,
-        onRefresh = client::rescan,
-        modifier = Modifier.fillMaxSize().testTag("step.choosing"),
+    NetworkPicker(
+        title = "Wifi wijzigen",
+        subtitle = "Kies het nieuwe wifi-netwerk voor het scherm",
+        notice = notice,
+        networks = networks,
+        scanning = scanning,
+        rescan = client::rescan,
+        choose = { choice = Choice(it) },
+        current = status?.ssid,
     ) {
-        LazyColumn(
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxSize(),
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 0.dp).card().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                Text(
-                    "Kies het nieuwe wifi-netwerk voor het scherm",
-                    color = Palette.muted,
-                    fontSize = 15.sp,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
-                )
-            }
-            notice?.let { text ->
-                item {
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .background(Palette.error.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                            .padding(14.dp)
-                            .testTag("label.notice"),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(painterResource(R.drawable.ic_warning), null, tint = Palette.error, modifier = Modifier.size(20.dp))
-                        Text(text, color = Palette.error, fontSize = 15.sp)
-                    }
-                }
-            }
-            item {
-                Column(Modifier.fillMaxWidth().background(Palette.card, RoundedCornerShape(12.dp))) {
-                    networks.forEach { network ->
-                        NetworkRow(network, current = network.ssid == status?.ssid) { choice = ManageChoice(network) }
-                        HorizontalDivider(color = Palette.line.copy(alpha = 0.6f), modifier = Modifier.padding(start = 16.dp))
-                    }
-                    if (networks.isEmpty()) {
-                        Text(
-                            if (scanning) "Netwerken zoeken…" else "Geen netwerken gevonden. Trek omlaag om opnieuw te zoeken.",
-                            color = Palette.muted,
-                            fontSize = 16.sp,
-                            modifier = Modifier.padding(16.dp),
-                        )
-                        HorizontalDivider(color = Palette.line.copy(alpha = 0.6f), modifier = Modifier.padding(start = 16.dp))
-                    }
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .heightIn(min = 52.dp)
-                            .clickable(role = Role.Button) { choice = ManageChoice(null) }
-                            .padding(horizontal = 16.dp)
-                            .testTag("network.other"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Icon(painterResource(R.drawable.ic_add), null, tint = Palette.accent, modifier = Modifier.size(20.dp))
-                        Text("Ander netwerk…", color = Palette.accent, fontSize = 17.sp)
-                    }
-                }
-            }
-            item {
-                Text(
-                    "Lukt het niet, dan gaat het scherm terug naar het netwerk dat het nu heeft.",
-                    color = Palette.muted,
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                )
-            }
+            Icon(painterResource(R.drawable.ic_info), null, tint = Palette.muted, modifier = Modifier.size(20.dp))
+            Text(
+                "Lukt het niet, dan gaat het scherm terug naar het netwerk dat het nu heeft.",
+                color = Palette.muted,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+            )
         }
     }
 

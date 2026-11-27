@@ -53,7 +53,7 @@ class ManageFlowTest {
     private fun waitForTag(tag: String, seconds: Long = 15) = compose.waitUntilAtLeastOneExists(hasTestTag(tag), seconds * 1000)
 
     private fun waitForText(text: String, seconds: Long = 10) =
-        compose.waitUntilAtLeastOneExists(hasText(text, substring = true), seconds * 1000)
+        compose.waitUntilAtLeastOneExists(hasText(text, substring = true, ignoreCase = true), seconds * 1000)
 
     private fun choose(network: String, password: String, submitWithKeyboard: Boolean = false) {
         waitForTag("network.$network", 10)

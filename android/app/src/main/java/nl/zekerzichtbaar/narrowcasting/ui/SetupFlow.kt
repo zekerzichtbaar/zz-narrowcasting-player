@@ -23,18 +23,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,10 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -60,50 +46,36 @@ import nl.zekerzichtbaar.narrowcasting.setup.Phase
 import nl.zekerzichtbaar.narrowcasting.setup.SetupClient
 
 /** The whole setup flow for one screen. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupFlow(client: SetupClient, rescanQr: () -> Unit, close: () -> Unit) {
     val phase by client.phase.collectAsStateWithLifecycle()
     val scanning by client.isScanning.collectAsStateWithLifecycle()
     val fix = rememberBluetoothFixes(client, client.link.deviceId, client.usesBluetooth, client::start)
 
-    Scaffold(
-        containerColor = Palette.background,
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Scherm ${client.link.deviceId}", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
-                navigationIcon = {
-                    TextButton(onClick = close, modifier = Modifier.testTag("button.close")) {
-                        Text(if (phase.isFinished) "Klaar" else "Stop", color = Palette.accent, fontSize = 16.sp)
-                    }
-                },
-                actions = {
-                    if (phase == Phase.Choosing) {
-                        if (scanning) {
-                            CircularProgressIndicator(
-                                color = Palette.muted,
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.padding(horizontal = 14.dp).size(20.dp),
-                            )
-                        } else {
-                            IconButton(onClick = client::rescan, modifier = Modifier.testTag("button.rescan")) {
-                                Icon(painterResource(R.drawable.ic_refresh), "Vernieuwen", tint = Palette.accent)
-                            }
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = Palette.background,
-                    titleContentColor = Palette.text,
-                ),
-            )
-        },
-    ) { padding ->
+    Column(Modifier.fillMaxSize().background(Palette.background).safeDrawingPadding()) {
+        TopBar(
+            Modifier.padding(top = 8.dp),
+            leading = {
+                SecondaryButton(
+                    if (phase.isFinished) "Klaar" else "Stop",
+                    onClick = close,
+                    compact = true,
+                    modifier = Modifier.testTag("button.close"),
+                )
+            },
+            trailing = {
+                if (phase == Phase.Choosing) {
+                    RescanButton(scanning, onClick = client::rescan, modifier = Modifier.testTag("button.rescan"))
+                } else {
+                    DeviceLabel("Scherm ${client.link.deviceId}")
+                }
+            },
+        )
         AnimatedContent(
             targetState = phase,
             contentKey = { it::class },
             transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(250)) },
-            modifier = Modifier.padding(padding).fillMaxSize(),
+            modifier = Modifier.fillMaxSize(),
             label = "phase",
         ) { current ->
             PhaseContent(current, client, rescanQr, fix)
@@ -114,9 +86,8 @@ fun SetupFlow(client: SetupClient, rescanQr: () -> Unit, close: () -> Unit) {
 @Composable
 private fun PhaseContent(phase: Phase, client: SetupClient, rescanQr: () -> Unit, fix: (BluetoothProblem) -> Unit) {
     when (phase) {
-        is Phase.Searching -> StepView(
-            icon = R.drawable.ic_bluetooth_searching,
-            busy = !phase.slow,
+        is Phase.Searching -> SearchingView(
+            slow = phase.slow,
             title = if (phase.slow) "Scherm nog niet gevonden" else "Scherm zoeken…",
             message = if (phase.slow) {
                 "Ga dichter bij het scherm staan en controleer of het \"Wifi instellen\" toont. We blijven zoeken."
@@ -175,7 +146,7 @@ internal fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProb
     when (problem) {
         BluetoothProblem.OFF -> StepView(
             icon = R.drawable.ic_bluetooth_disabled,
-            tint = Palette.error,
+            tint = Palette.warn,
             title = "Bluetooth staat uit",
             message = if (managing) {
                 "Zet Bluetooth aan. Het scherm wordt via Bluetooth beheerd."
@@ -188,7 +159,7 @@ internal fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProb
         }
         BluetoothProblem.UNAUTHORIZED -> StepView(
             icon = R.drawable.ic_shield_lock,
-            tint = Palette.error,
+            tint = Palette.warn,
             title = "Geen toegang tot Bluetooth",
             message = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 "Sta \"Apparaten in de buurt\" toe om het scherm te kunnen vinden."
@@ -201,7 +172,7 @@ internal fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProb
         }
         BluetoothProblem.LOCATION_OFF -> StepView(
             icon = R.drawable.ic_location_off,
-            tint = Palette.error,
+            tint = Palette.warn,
             title = "Locatie staat uit",
             message = "Op deze Android-versie vindt de telefoon Bluetooth-apparaten alleen met Locatie aan. De app gebruikt je locatie niet.",
             modifier = Modifier.testTag("step.locationOff"),
@@ -210,7 +181,7 @@ internal fun BluetoothProblemView(problem: BluetoothProblem, fix: (BluetoothProb
         }
         BluetoothProblem.UNSUPPORTED -> StepView(
             icon = R.drawable.ic_warning,
-            tint = Palette.error,
+            tint = Palette.warn,
             title = "Bluetooth niet beschikbaar",
             message = if (managing) {
                 "Deze telefoon ondersteunt geen Bluetooth LE, en dat is nodig om het scherm te beheren."
@@ -288,59 +259,44 @@ private fun Activity.openSettings(appDetails: Boolean) {
 private fun OnlineView(phase: Phase.Online) {
     val uriHandler = LocalUriHandler.current
     StepView(
-        icon = R.drawable.ic_check_circle,
+        icon = R.drawable.ic_check,
         title = "Het scherm is online",
         message = phase.ssid?.let { "Verbonden met $it." },
         modifier = Modifier.testTag("step.online"),
     ) {
         Column(
-            Modifier.fillMaxWidth().background(Palette.card, RoundedCornerShape(16.dp)).padding(vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            Modifier.fillMaxWidth().card().padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
-                "KOPPELCODE",
-                color = Palette.muted,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 1.5.sp,
-            )
+            Kicker("Koppelcode")
             val code = phase.code
             if (code != null) {
-                SelectionContainer {
-                    Text(
-                        code,
-                        color = Palette.text,
-                        fontSize = 44.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.testTag("label.code"),
-                    )
-                }
+                PairingCodeBoxes(code, Modifier.testTag("label.code"))
             } else {
                 Row(
-                    Modifier.height(52.dp),
+                    Modifier.height(58.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    CircularProgressIndicator(color = Palette.muted, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                    Spinner()
                     Text("Code ophalen…", color = Palette.muted, fontSize = 16.sp)
                 }
             }
         }
-        phase.url?.let { url ->
-            PrimaryButton(
-                "Koppel dit scherm",
-                onClick = { runCatching { uriHandler.openUri(url) } },
-                modifier = Modifier.testTag("button.pair"),
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            phase.url?.let { url ->
+                PrimaryButton(
+                    "Koppel dit scherm",
+                    onClick = { runCatching { uriHandler.openUri(url) } },
+                    modifier = Modifier.testTag("button.pair"),
+                )
+            }
+            Text(
+                "Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.",
+                color = Palette.faint,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
             )
         }
-        Text(
-            "Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.",
-            color = Palette.muted,
-            fontSize = 13.sp,
-            textAlign = TextAlign.Center,
-        )
     }
 }

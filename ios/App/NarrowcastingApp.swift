@@ -58,11 +58,14 @@ private struct HomeView: View {
         ScanPromptView(message: "Scan de QR-code die het scherm bij \"Wifi instellen\" toont, of de QR-sticker op de speler. Daarna stel je de wifi van het scherm in via Bluetooth.") {
             VStack(spacing: 12) {
                 if canScan {
-                    Button("Scan de QR-code") { Task { await openScanner() } }
-                        .setupPrimaryButton()
-                        .accessibilityIdentifier("button.scan")
+                    Button { Task { await openScanner() } } label: {
+                        Label("Scan de QR-code", systemImage: "qrcode.viewfinder")
+                    }
+                    .setupPrimaryButton()
+                    .accessibilityIdentifier("button.scan")
                 }
                 Button("Link plakken of typen") { typing = true }
+                    .setupSecondaryButton()
                     .accessibilityIdentifier("button.typeLink")
             }
         }
