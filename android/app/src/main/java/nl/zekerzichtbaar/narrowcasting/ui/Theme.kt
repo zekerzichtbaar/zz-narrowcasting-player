@@ -316,11 +316,13 @@ fun LogoMark(modifier: Modifier = Modifier, sticker: Boolean = true) {
 fun Wordmark(modifier: Modifier = Modifier, size: TextUnit = 13.sp) {
     Column(
         modifier.clearAndSetSemantics { contentDescription = "Zeker Zichtbaar" },
-        verticalArrangement = Arrangement.spacedBy(1.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
+        // lineHeight 1.1 like the CMS sidebar: the font's default leading puts the two words too far apart.
         Text("ZEKER", color = Palette.text, fontFamily = Fonts.walsheim, fontWeight = FontWeight.Bold,
-            fontSize = size, letterSpacing = 0.14.em)
-        Text("ZICHTBAAR", color = Palette.text, fontFamily = Fonts.walsheim, fontSize = size, letterSpacing = 0.14.em)
+            fontSize = size, letterSpacing = 0.14.em, lineHeight = size * 1.1)
+        Text("ZICHTBAAR", color = Palette.text, fontFamily = Fonts.walsheim, fontSize = size, letterSpacing = 0.14.em,
+            lineHeight = size * 1.1)
     }
 }
 

@@ -32,7 +32,7 @@ Style: house style D3 (canvas "App en App Clip"), the same as the iOS app. Token
 `TopBar`). Fonts in `res/font/`: GT Walsheim Pro Regular/Medium/Bold and ZZ Impact under Zeker Zichtbaar's licence
 (embedding confirmed by the user, 2026-10-30; not for other use), Geist Mono Medium under the SIL OFL 1.1. Same
 files as `pi_player/fonts/`. The logo (`res/drawable/zz_logo.xml`, `zz_mark.xml`) and the adaptive launcher icon
-(`ic_launcher_foreground.xml` on white, `ic_launcher_monochrome.xml` = the plain z) are vectors from the canvas
+(`ic_launcher_foreground.xml` on white, `ic_launcher_monochrome.xml` = the themed icon for Android 13+: the logo in one colour, z and TV cut out, a gap around the sticker via a `clip-path`) are vectors from the canvas
 paths; "TV" on the sticker is GT Walsheim Bold as outlines (fonttools).
 
 ## Build
@@ -104,6 +104,14 @@ Release builds have the same mock behind the demo link
    Location must also be switched on, otherwise scans find nothing.
 
 ## Release
+
+- **Store images** (`fastlane/metadata/android/nl-NL/images/`): `icon.png` (512) = the iOS `AppIcon.png` scaled down;
+  `featureGraphic.png` 1024x500 without alpha; `phoneScreenshots/1-5.png` at 1080x2160 (Play allows at most 2:1, so
+  crop the 1080x2400 emulator shots: `magick in.png -crop 1080x2160+0+140 +repage out.png`). Take them on the
+  `Pixel_9_Pro` AVD with the demo status bar (`adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0941`)
+  from `SetupFlowTest` (`./gradlew connectedDebugAndroidTest -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true`,
+  then `adb pull /sdcard/Android/data/nl.zekerzichtbaar.narrowcasting/files/screenshots/`): home (or `adb exec-out screencap`),
+  01-list, 02-password, 06-online-code, 03-connecting. Upload with `fastlane android listing`.
 
 - **App Link:** the CMS must serve `https://app.zekerzichtbaar.tv/.well-known/assetlinks.json`:
 

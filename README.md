@@ -188,7 +188,7 @@ Walkthrough of the phone routes on a fresh Pi with no ethernet:
    the clip shows the progress, the error (e.g. *Verkeerd wachtwoord?*) or, once the screen is
    online, its pairing code with a button to the CMS pairing page. The phone stays on its own
    network the whole time. Protocol: [`docs/ble-setup.md`](docs/ble-setup.md).
-   **Android:** the same with the *Narrowcasting* app from the Play Store. Scan the QR with the
+   **Android:** the same with the *Zeker Zichtbaar TV* app from the Play Store. Scan the QR with the
    camera (opens the app) or with *Scan de QR-code* in the app. See [`android/`](android/).
 3. **Other phones** (or a phone without the app): join the hotspot by hand; scanning the
    QR on Android without the app opens a CMS page with the same steps. The phone's captive-portal sheet or

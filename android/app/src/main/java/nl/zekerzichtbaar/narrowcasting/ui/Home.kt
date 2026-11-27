@@ -74,7 +74,8 @@ fun HomeScreen(message: String, open: (ScreenLink) -> Unit) {
             ) {
                 TvWithQr(Modifier.align(Alignment.CenterHorizontally))
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ImpactTitle("Scan de QR-code op het scherm", 52.sp)
+                    // Two fixed lines (as on iOS): a phone width otherwise breaks it into three.
+                    ImpactTitle("Scan de QR-code\nop het scherm", 38.sp)
                     Lead(problem ?: message)
                 }
             }

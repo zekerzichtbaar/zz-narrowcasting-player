@@ -292,7 +292,7 @@ private fun OnlineView(phase: Phase.Online) {
                 )
             }
             Text(
-                "Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.",
+                "Koppel het scherm in Zeker Zichtbaar TV met deze code. Het scherm toont dezelfde code.",
                 color = Palette.faint,
                 fontSize = 14.sp,
                 lineHeight = 20.sp,

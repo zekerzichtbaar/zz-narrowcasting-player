@@ -20,6 +20,12 @@ Fonts are package resources (`WifiSetupUI/Fonts/`, registered at runtime by `Fon
 `UIAppFonts`): GT Walsheim Pro Regular/Medium/Bold and ZZ Impact under Zeker Zichtbaar's licence (embedding
 confirmed by the user, 2026-10-30; not for other use), Geist Mono Medium under the SIL OFL 1.1. Same files as
 `pi_player/fonts/`. App icon and `AppStore/appclip-header-*.png` are rendered from the canvas (headless Chrome).
+The app icon (app and App Clip share `Shared/Assets.xcassets/AppIcon.appiconset`) has three iOS 18 appearances:
+`AppIcon.png` (light, also the App Store icon), `AppIcon-Dark.png` (transparent, the system draws the dark backdrop;
+white sticker with ink as on dark surfaces) and `AppIcon-Tinted.png` (grayscale on black, z and TV cut out). Sources
+in `AppStore/icon-src/AppIcon-*.svg`; regenerate each with
+`"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars --default-background-color=00000000 --window-size=1024,1024 --screenshot=AppIcon-Dark.png file://$PWD/AppStore/icon-src/AppIcon-dark.svg`
+(the tinted one saved as 8-bit grayscale).
 
 ## Generate and build
 
@@ -66,6 +72,13 @@ management against the simulated Pi.
    Then scan the QR with the Camera app.
 
 ## Release
+
+- **Store screenshots** (`AppStore/` = 6.9" 1320x2868, `AppStore/6.3/` = 6.3" 1206x2622): run
+  `TEST_RUNNER_SCREENSHOT_DIR=<dir> xcodebuild -scheme NarrowcastingClip -destination 'id=<sim>' -only-testing:NarrowcastingClipUITests/ClipFlowUITests/testWrongPasswordThenOnline test`
+  on an iPhone 17 Pro Max and an iPhone 17 Pro simulator (`xcrun simctl status_bar <sim> override --time 9:41 ...`
+  first), and take the home with `xcrun simctl launch <sim> nl.zekerzichtbaar.narrowcasting -storeScreenshot YES` +
+  `xcrun simctl io <sim> screenshot`. Map: home -> 01-home, 01-list -> 02-networks, 02-password -> 03-password,
+  06-online-code -> 04-online, 03-connecting -> 05-connecting. The app icon in the store is `AppIcon.png` from the build.
 
 - The CMS serves `/.well-known/apple-app-site-association` with `appclips.apps` =
   `["<TEAM>.nl.zekerzichtbaar.narrowcasting.Clip"]` and `applinks` for `/setup`.

@@ -40,10 +40,11 @@ final class ClipFlowUITests: XCTestCase {
         kantine.tap()
         let password = app.secureTextFields["field.password"]
         XCTAssert(password.waitForExistence(timeout: 5))
+        shot("02-password")  // the empty password step, for the App Store
         password.typeText("kort")
         app.buttons["button.connect"].tap()
         XCTAssert(element("label.problem").waitForExistence(timeout: 3))
-        shot("02-password-too-short")
+        shot("02b-password-too-short")
         password.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4) + "fout1234")
         app.buttons["button.connect"].tap()
 

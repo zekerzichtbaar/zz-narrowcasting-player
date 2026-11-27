@@ -64,10 +64,11 @@ class SetupFlowTest {
 
         compose.onNodeWithTag("network.Kantine").performClick()
         waitForTag("field.password", 5)
+        shot("02-password") // the empty password step, for the Play Store
         compose.onNodeWithTag("field.password").performTextInput("kort")
         compose.onNodeWithTag("button.connect").performClick()
         waitForInnerTag("label.problem", 3)
-        shot("02-password-too-short")
+        shot("02b-password-too-short")
         compose.onNodeWithTag("field.password").performTextClearance()
         compose.onNodeWithTag("field.password").performTextInput("fout1234")
         compose.onNodeWithTag("button.connect").performClick()

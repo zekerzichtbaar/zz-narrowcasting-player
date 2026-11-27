@@ -153,7 +153,7 @@ private struct OnlineView: View {
                         .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("button.pair")
                 }
-                Text("Koppel het scherm in Narrowcasting met deze code. Het scherm toont dezelfde code.")
+                Text("Koppel het scherm in Zeker Zichtbaar TV met deze code. Het scherm toont dezelfde code.")
                     .font(Theme.font(14))
                     .foregroundStyle(Theme.faint)
                     .fixedSize(horizontal: false, vertical: true)

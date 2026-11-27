@@ -99,10 +99,12 @@ public struct ScanPromptView<Actions: View>: View {
                 VStack(alignment: .leading, spacing: 40) {
                     TVWithQR().frame(maxWidth: .infinity)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Scan de QR-code op het scherm")
+                        // Two fixed lines that shrink to fit: otherwise a 6.3" iPhone breaks "QR- / CODE".
+                        Text("Scan de QR-code\nop het scherm")
                             .impactTitle(52)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.7)
                             .foregroundStyle(Theme.text)
-                            .fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
                         Text(message)
                             .font(Theme.font(17))

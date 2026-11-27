@@ -15,7 +15,7 @@
 
     <application
         android:icon="@mipmap/ic_launcher"
-        android:label="Narrowcasting"
+        android:label="ZZ TV"
         android:supportsRtl="true"
         android:theme="@style/Theme.Narrowcasting">
 

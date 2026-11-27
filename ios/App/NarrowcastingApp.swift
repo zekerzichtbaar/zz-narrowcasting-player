@@ -34,8 +34,9 @@ private struct HomeView: View {
     @State private var typed = ""
     @State private var cameraDenied = false
 
+    // `-storeScreenshot YES` shows the button on a simulator (no scanner there) for the App Store screenshots.
     private var canScan: Bool {
-        DataScannerViewController.isSupported
+        DataScannerViewController.isSupported || UserDefaults.standard.bool(forKey: "storeScreenshot")
     }
 
     // isAvailable stays false until the camera is allowed, so ask here instead of hiding the button.
